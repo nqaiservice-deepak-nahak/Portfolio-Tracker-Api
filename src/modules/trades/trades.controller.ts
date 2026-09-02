@@ -6,13 +6,11 @@ import {
   Param,
   Post,
   Put,
-  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
-  ApiQuery,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
@@ -21,6 +19,7 @@ import { TradesAbstract } from './trades.abstract';
 import { CreateTradeDto } from './dto/create-trade.dto';
 import { UpdateTradeDto } from './dto/update-trade.dto';
 import { CreateTradeSellDto } from './dto/create-trade-sell.sto';
+import { ListTradesDto, ListTradeSellsDto } from './dto/list-trades.dto';
 import { JwtAuthGuard } from 'src/core/guards/jwt-auth.guard';
 import { CurrentUser } from 'src/core/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
@@ -33,7 +32,7 @@ import type { AppResponse } from '../../shared/appresponse.shared';
 export class TradesController {
   constructor(private readonly tradesService: TradesAbstract) {}
 
-  @Post()
+  @Post('create')
   @ApiOperation({
     summary: 'Create swing trade for logged-in user',
   })
@@ -51,14 +50,9 @@ export class TradesController {
     );
   }
 
-  @Get()
+  @Post()
   @ApiOperation({
-    summary: 'List logged-in user trades',
-  })
-  @ApiQuery({
-    name: 'includeArchived',
-    required: false,
-    example: false,
+    summary: 'List logged-in user trades with pagination and search',
   })
   @ApiResponse({
     status: 200,
@@ -66,11 +60,11 @@ export class TradesController {
   })
   async listTrades(
     @CurrentUser() currentUser: AuthenticatedUser,
-    @Query('includeArchived') includeArchived?: string,
+    @Body() listTradesDto: ListTradesDto,
   ): Promise<AppResponse> {
     return await this.tradesService.listTrades(
       currentUser.userId,
-      includeArchived === 'true',
+      listTradesDto,
     );
   }
 
@@ -130,7 +124,7 @@ export class TradesController {
     );
   }
 
-  @Post(':id/sell')
+  @Post(':id/sell/create')
   @ApiOperation({
     summary: 'Record partial or full sell for a trade',
   })
@@ -150,9 +144,9 @@ export class TradesController {
     );
   }
 
-  @Get(':id/sell')
+  @Post(':id/sell')
   @ApiOperation({
-    summary: 'List sell entries for a trade',
+    summary: 'List sell entries for a trade with pagination',
   })
   @ApiResponse({
     status: 200,
@@ -161,10 +155,13 @@ export class TradesController {
   async listSells(
     @CurrentUser() currentUser: AuthenticatedUser,
     @Param('id') id: string,
+    @Body() listTradeSellsDto: ListTradeSellsDto,
   ): Promise<AppResponse> {
     return await this.tradesService.listSells(
       currentUser.userId,
       id,
+      listTradeSellsDto,
     );
   }
+
 }

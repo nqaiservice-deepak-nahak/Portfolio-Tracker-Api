@@ -19,6 +19,8 @@ import {
   TradeSummary,
   TradeSellSummary,
 } from './trades.abstract';
+import { ListTradesDto, ListTradeSellsDto } from './dto/list-trades.dto';
+import { calculatePaginationMeta, skipAndLimit } from '../../shared/pagination.shared';
 
 @Injectable()
 export class TradesService extends TradesAbstract {
@@ -80,16 +82,27 @@ export class TradesService extends TradesAbstract {
 
   async listTrades(
     userId: string,
-    includeArchived = false,
+    listTradesDto: ListTradesDto | boolean = false,
   ): Promise<AppResponse> {
     try {
+      const isPaginatedRequest = typeof listTradesDto !== 'boolean';
+      const request: Partial<ListTradesDto> = isPaginatedRequest
+        ? listTradesDto
+        : { includeArchived: listTradesDto };
+      const { page = 1, limit = 10, search, includeArchived = false } = request;
       const tradesRes = await this.tradesDao.listTrades(userId, includeArchived);
       if (tradesRes.code !== HttpStatus.OK) {
         return tradesRes;
       }
 
-      const trades = tradesRes.data as TradeDocument[];
-      const tradeIds = trades.map((trade) => trade._id.toString());
+      const trades = (tradesRes.data as TradeDocument[]).filter((trade) =>
+        !search || [trade.stockSymbol, trade.companyName]
+          .some((value) => value.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())),
+      );
+      const totalItems = trades.length;
+      const { skip } = skipAndLimit(page, limit);
+      const pageTrades = trades.slice(skip, skip + limit);
+      const tradeIds = pageTrades.map((trade) => trade._id.toString());
 
       let sells: TradeSellDocument[] = [];
       if (tradeIds.length > 0) {
@@ -100,14 +113,18 @@ export class TradesService extends TradesAbstract {
         sells = sellsRes.data as TradeSellDocument[];
       }
 
-      const summaries = trades.map((trade) => {
+      const summaries = pageTrades.map((trade) => {
         const tradeSells = sells.filter(
           (sell) => sell.tradeId.toString() === trade._id.toString(),
         );
         return this.buildTradeSummary(trade, tradeSells);
       });
 
-      return createResponse(HttpStatus.OK, Messages.S18, summaries);
+      const response = {
+        data: summaries,
+        pagination: calculatePaginationMeta(totalItems, page, limit),
+      };
+      return createResponse(HttpStatus.OK, Messages.S18, isPaginatedRequest ? response : summaries);
     } catch (error: any) {
       return createResponse(HttpStatus.INTERNAL_SERVER_ERROR, Messages.E2);
     }
@@ -303,6 +320,10 @@ export class TradesService extends TradesAbstract {
         return createResponse(HttpStatus.BAD_REQUEST, Messages.W30);
       }
 
+      if (sellDate > new Date()) {
+        return createResponse(HttpStatus.BAD_REQUEST, Messages.W39);
+      }
+
       if (sellDate < trade.buyDate) {
         return createResponse(HttpStatus.BAD_REQUEST, Messages.W31);
       }
@@ -370,6 +391,7 @@ export class TradesService extends TradesAbstract {
   async listSells(
     userId: string,
     tradeId: string,
+    listTradeSellsDto?: ListTradeSellsDto,
   ): Promise<AppResponse> {
     try {
       const tradeRes = await this.findUserTrade(userId, tradeId);
@@ -385,11 +407,21 @@ export class TradesService extends TradesAbstract {
       const sells = sellsRes.data as TradeSellDocument[];
 
       const averageBuyCost = this.calculateAverageBuyCost(trade);
-      const summaries = sells.map((sell) =>
+      if (!listTradeSellsDto) return createResponse(HttpStatus.OK, Messages.S23, sells.map((sell) => this.buildSellSummary(sell, averageBuyCost)));
+      const { page = 1, limit = 10, sortOrder = 'desc' } = listTradeSellsDto;
+      const orderedSells = [...sells].sort((a, b) =>
+        sortOrder === 'asc'
+          ? a.sellDate.getTime() - b.sellDate.getTime()
+          : b.sellDate.getTime() - a.sellDate.getTime(),
+      );
+      const { skip } = skipAndLimit(page, limit);
+      const summaries = orderedSells.slice(skip, skip + limit).map((sell) =>
         this.buildSellSummary(sell, averageBuyCost),
       );
-
-      return createResponse(HttpStatus.OK, Messages.S23, summaries);
+      return createResponse(HttpStatus.OK, Messages.S23, {
+        data: summaries,
+        pagination: calculatePaginationMeta(sells.length, page, limit),
+      });
     } catch (error: any) {
       return createResponse(HttpStatus.INTERNAL_SERVER_ERROR, Messages.E2);
     }

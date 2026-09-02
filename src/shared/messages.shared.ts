@@ -77,6 +77,7 @@ enum Messages {
   W36 = 'Sell quantity cannot be greater than remaining quantity ARG0.',
   W37 = 'Buy date cannot be after an existing sell date.',
   W38 = 'Microsoft ID token was not returned.',
+  W39 = 'Sell date cannot be in the future.',
 
   /* Error messages : Start with E */
   E1 = 'Application failed to start: ARG0',

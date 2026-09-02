@@ -2,6 +2,7 @@ import type { AppResponse } from '../../shared/appresponse.shared';
 import { CreateTradeDto } from './dto/create-trade.dto';
 import { UpdateTradeDto } from './dto/update-trade.dto';
 import { CreateTradeSellDto } from './dto/create-trade-sell.sto';
+import { ListTradesDto, ListTradeSellsDto } from './dto/list-trades.dto';
 
 export interface TradeSellSummary {
   id: string;
@@ -59,7 +60,7 @@ export abstract class TradesAbstract {
 
   abstract listTrades(
     userId: string,
-    includeArchived?: boolean,
+    listTradesDto: ListTradesDto,
   ): Promise<AppResponse>;
 
   abstract getTradeById(
@@ -87,5 +88,6 @@ export abstract class TradesAbstract {
   abstract listSells(
     userId: string,
     tradeId: string,
+    listTradeSellsDto: ListTradeSellsDto,
   ): Promise<AppResponse>;
 }

@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
 import { CoreModule } from '../../core/core.module';
 import { DatabaseModule } from '../../database/database.module';
 import { AppController } from './app.controller';
@@ -15,8 +14,7 @@ import { ChatbotModule } from '../chatbot/chatbot.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
-    CoreModule,
+    CoreModule,       // ConfigModule is now inside CoreModule via providers.ts
     DatabaseModule,
     UsersModule,
     AuthModule,

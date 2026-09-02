@@ -2,6 +2,7 @@ import type { AppResponse } from '../../shared/appresponse.shared';
 import { CreateMutualFundDto } from './dto/create-mutual-fund.dto';
 import { UpdateMutualFundDto } from './dto/update-mutual-fund.dto';
 import { CreateSipEntryDto } from './dto/create-sip-entry.dto';
+import { ListMutualFundsDto, ListSipEntriesDto } from './dto/list-mutual-funds.dto';
 
 export abstract class MutualFundsAbstract {
   abstract createFund(
@@ -11,7 +12,7 @@ export abstract class MutualFundsAbstract {
 
   abstract listFunds(
     userId: string,
-    includeArchived?: boolean,
+    listMutualFundsDto: ListMutualFundsDto,
   ): Promise<AppResponse>;
 
   abstract getFundById(
@@ -39,6 +40,7 @@ export abstract class MutualFundsAbstract {
   abstract listSipEntries(
     userId: string,
     fundId: string,
+    listSipEntriesDto: ListSipEntriesDto,
   ): Promise<AppResponse>;
 
   abstract getProjection(

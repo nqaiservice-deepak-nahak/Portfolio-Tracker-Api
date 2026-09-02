@@ -1,16 +1,10 @@
-import { Module } from '@nestjs/common';
-import { APP_INTERCEPTOR } from '@nestjs/core';
-import { AppConfigService } from '../config/appconfig.service';
-import { ResponseHandler } from './middleware/response-handler';
+import { Global, Module } from '@nestjs/common';
+import { getProviders, importProviders, exportProviders } from './providers';
 
+@Global()
 @Module({
-  providers: [
-    AppConfigService,
-    {
-      provide: APP_INTERCEPTOR,
-      useClass: ResponseHandler,
-    },
-  ],
-  exports: [AppConfigService],
+  providers: [...getProviders()],
+  imports: [...importProviders()],
+  exports: [...exportProviders()],
 })
 export class CoreModule {}

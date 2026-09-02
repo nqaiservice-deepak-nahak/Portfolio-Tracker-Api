@@ -15,6 +15,8 @@ import {
   DashboardSummaryDto,
 } from './dto/dashboard-summary.dto';
 import { DashboardAbstract } from './dashboard.abstract';
+import { ListRecentActivityDto } from './dto/list-recent-activity.dto';
+import { calculatePaginationMeta, skipAndLimit } from '../../shared/pagination.shared';
 
 @Injectable()
 export class DashboardService extends DashboardAbstract {
@@ -150,6 +152,50 @@ export class DashboardService extends DashboardAbstract {
       };
 
       return createResponse(HttpStatus.OK, Messages.S24, summary);
+    } catch (error: any) {
+      return createResponse(HttpStatus.INTERNAL_SERVER_ERROR, Messages.E2);
+    }
+  }
+
+  async getRecentActivity(
+    userId: string,
+    dto: ListRecentActivityDto,
+  ): Promise<AppResponse> {
+    try {
+      const [fundsRes, tradesRes] = await Promise.all([
+        this.dashboardDao.getActiveFunds(userId),
+        this.dashboardDao.getActiveTrades(userId),
+      ]);
+      if (fundsRes.code !== HttpStatus.OK) return fundsRes;
+      if (tradesRes.code !== HttpStatus.OK) return tradesRes;
+
+      const funds = fundsRes.data as MutualFundDocument[];
+      const trades = tradesRes.data as TradeDocument[];
+      const [sipRes, sellsRes] = await Promise.all([
+        funds.length
+          ? this.dashboardDao.getSipEntriesForFunds(userId, funds.map((fund) => fund._id.toString()))
+          : Promise.resolve(createResponse(HttpStatus.OK, '', [])),
+        trades.length
+          ? this.dashboardDao.getTradeSellsForTrades(userId, trades.map((trade) => trade._id.toString()))
+          : Promise.resolve(createResponse(HttpStatus.OK, '', [])),
+      ]);
+      if (sipRes.code !== HttpStatus.OK) return sipRes;
+      if (sellsRes.code !== HttpStatus.OK) return sellsRes;
+
+      const { page = 1, limit = 10, activityType } = dto;
+      const activities = this.getRecentActivities({
+        funds,
+        trades,
+        sipEntries: sipRes.data as SipEntryDocument[],
+        tradeSells: sellsRes.data as TradeSellDocument[],
+      }, Number.MAX_SAFE_INTEGER).filter((activity) =>
+        !activityType || activity.type === activityType,
+      );
+      const { skip } = skipAndLimit(page, limit);
+      return createResponse(HttpStatus.OK, Messages.S24, {
+        data: activities.slice(skip, skip + limit),
+        pagination: calculatePaginationMeta(activities.length, page, limit),
+      });
     } catch (error: any) {
       return createResponse(HttpStatus.INTERNAL_SERVER_ERROR, Messages.E2);
     }
@@ -357,7 +403,7 @@ export class DashboardService extends DashboardAbstract {
     sipEntries: SipEntryDocument[];
     trades: TradeDocument[];
     tradeSells: TradeSellDocument[];
-  }): DashboardRecentActivityDto[] {
+  }, limit = 5): DashboardRecentActivityDto[] {
     const activities: DashboardRecentActivityDto[] = [];
 
     const latestFunds = params.funds.slice(0, 2);
@@ -451,7 +497,7 @@ export class DashboardService extends DashboardAbstract {
           new Date(b.activityAt).getTime() - new Date(a.activityAt).getTime()
         );
       })
-      .slice(0, 5);
+      .slice(0, limit);
   }
 
   private getDocumentDate(

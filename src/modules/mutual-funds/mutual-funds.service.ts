@@ -11,9 +11,15 @@ import { MutualFundsAbstract } from './mutual-funds.abstract';
 import { CreateMutualFundDto } from './dto/create-mutual-fund.dto';
 import { UpdateMutualFundDto } from './dto/update-mutual-fund.dto';
 import { CreateSipEntryDto } from './dto/create-sip-entry.dto';
+import { ListMutualFundsDto, ListSipEntriesDto } from './dto/list-mutual-funds.dto';
 import type { AppResponse } from '../../shared/appresponse.shared';
 import { createResponse } from '../../shared/appresponse.shared';
 import { messageFactory, Messages } from '../../shared/messages.shared';
+import {
+  PaginatedResponseDto,
+  calculatePaginationMeta,
+  skipAndLimit,
+} from '../../shared/pagination.shared';
 
 export interface MutualFundSummary {
   id: string;
@@ -93,16 +99,24 @@ export class MutualFundsService implements MutualFundsAbstract {
 
   async listFunds(
     userId: string,
-    includeArchived = false,
+    listMutualFundsDto: ListMutualFundsDto | boolean = false,
   ): Promise<AppResponse> {
     try {
-      const fundsResult = await this.mutualFundsDao.listFunds(userId, includeArchived);
-      if (fundsResult.code >= HttpStatus.BAD_REQUEST) {
-        return fundsResult;
-      }
+      const isPaginatedRequest = typeof listMutualFundsDto !== 'boolean';
+      const request: Partial<ListMutualFundsDto> = isPaginatedRequest
+        ? listMutualFundsDto
+        : { includeArchived: listMutualFundsDto };
+      const { page = 1, limit = 10, search, includeArchived = false } = request;
+      const fundsResponse = await this.mutualFundsDao.listFunds(userId, includeArchived);
+      if (fundsResponse.code >= HttpStatus.BAD_REQUEST) return fundsResponse;
+      const matchingFunds = (fundsResponse.data as MutualFundDocument[]).filter((fund) =>
+        !search || fund.fundName.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
+      );
+      const totalItems = matchingFunds.length;
+      const { skip } = skipAndLimit(page, limit);
+      const fundsResult = matchingFunds.slice(skip, skip + limit);
 
-      const funds: MutualFundDocument[] = fundsResult.data;
-      const fundIds = funds.map((fund) => fund._id.toString());
+      const fundIds = fundsResult.map((fund) => fund._id.toString());
 
       const sipEntriesResult = await this.mutualFundsDao.listSipEntries(userId, fundIds);
       if (sipEntriesResult.code >= HttpStatus.BAD_REQUEST) {
@@ -111,7 +125,7 @@ export class MutualFundsService implements MutualFundsAbstract {
 
       const sipEntries: SipEntryDocument[] = sipEntriesResult.data;
 
-      const summaries = funds.map((fund) => {
+      const summaries = fundsResult.map((fund) => {
         const fundSipEntries = sipEntries.filter(
           (entry) => entry.fundId.toString() === fund._id.toString(),
         );
@@ -119,7 +133,12 @@ export class MutualFundsService implements MutualFundsAbstract {
         return this.buildFundSummary(fund, fundSipEntries);
       });
 
-      return createResponse(HttpStatus.OK, Messages.S10, summaries);
+      const response: PaginatedResponseDto<any> = {
+        data: summaries,
+        pagination: calculatePaginationMeta(totalItems, page, limit),
+      };
+
+      return createResponse(HttpStatus.OK, Messages.S10, isPaginatedRequest ? response : summaries);
     } catch (error: any) {
       return createResponse(HttpStatus.INTERNAL_SERVER_ERROR, Messages.E2);
     }
@@ -345,6 +364,7 @@ export class MutualFundsService implements MutualFundsAbstract {
   async listSipEntries(
     userId: string,
     fundId: string,
+    listSipEntriesDto?: ListSipEntriesDto,
   ): Promise<AppResponse> {
     try {
       const fundResult = await this.findUserFund(userId, fundId);
@@ -356,8 +376,16 @@ export class MutualFundsService implements MutualFundsAbstract {
       if (entriesResult.code >= HttpStatus.BAD_REQUEST) {
         return entriesResult;
       }
-
-      return createResponse(HttpStatus.OK, Messages.S15, entriesResult.data);
+      if (!listSipEntriesDto) return createResponse(HttpStatus.OK, Messages.S15, entriesResult.data);
+      const { page = 1, limit = 10, sortOrder = 'desc' } = listSipEntriesDto;
+      const entries = [...(entriesResult.data as SipEntryDocument[])].sort((a, b) =>
+        sortOrder === 'asc' ? a.month.localeCompare(b.month) : b.month.localeCompare(a.month),
+      );
+      const { skip } = skipAndLimit(page, limit);
+      return createResponse(HttpStatus.OK, Messages.S15, {
+        data: entries.slice(skip, skip + limit),
+        pagination: calculatePaginationMeta(entries.length, page, limit),
+      });
     } catch (error: any) {
       return createResponse(HttpStatus.INTERNAL_SERVER_ERROR, Messages.E2);
     }

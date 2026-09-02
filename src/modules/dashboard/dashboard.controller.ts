@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -7,6 +7,7 @@ import {
 } from '@nestjs/swagger';
 
 import { DashboardAbstract } from './dashboard.abstract';
+import { ListRecentActivityDto } from './dto/list-recent-activity.dto';
 import { JwtAuthGuard } from 'src/core/guards/jwt-auth.guard';
 import { CurrentUser } from 'src/core/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
@@ -35,5 +36,23 @@ export class DashboardController {
     @CurrentUser() currentUser: AuthenticatedUser,
   ): Promise<AppResponse> {
     return await this.dashboardService.getSummary(currentUser.userId);
+  }
+
+  @Post('recent-activity')
+  @ApiOperation({
+    summary: 'Get logged-in user recent activity with pagination',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Recent activity fetched successfully',
+  })
+  async getRecentActivity(
+    @CurrentUser() currentUser: AuthenticatedUser,
+    @Body() listRecentActivityDto: ListRecentActivityDto,
+  ): Promise<AppResponse> {
+    return await this.dashboardService.getRecentActivity(
+      currentUser.userId,
+      listRecentActivityDto,
+    );
   }
 }

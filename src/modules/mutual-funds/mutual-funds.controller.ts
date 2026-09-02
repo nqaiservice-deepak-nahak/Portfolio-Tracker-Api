@@ -6,13 +6,11 @@ import {
   Param,
   Post,
   Put,
-  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
-  ApiQuery,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
@@ -21,6 +19,7 @@ import { MutualFundsAbstract } from './mutual-funds.abstract';
 import { CreateMutualFundDto } from './dto/create-mutual-fund.dto';
 import { UpdateMutualFundDto } from './dto/update-mutual-fund.dto';
 import { CreateSipEntryDto } from './dto/create-sip-entry.dto';
+import { ListMutualFundsDto, ListSipEntriesDto } from './dto/list-mutual-funds.dto';
 import { JwtAuthGuard } from 'src/core/guards/jwt-auth.guard';
 import { CurrentUser } from 'src/core/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
@@ -35,7 +34,7 @@ export class MutualFundsController {
     private readonly mutualFundsService: MutualFundsAbstract,
   ) {}
 
-  @Post()
+  @Post('create')
   @ApiOperation({
     summary: 'Create a mutual fund for logged-in user',
   })
@@ -53,14 +52,9 @@ export class MutualFundsController {
     );
   }
 
-  @Get()
+  @Post()
   @ApiOperation({
-    summary: 'List logged-in user mutual funds',
-  })
-  @ApiQuery({
-    name: 'includeArchived',
-    required: false,
-    example: false,
+    summary: 'List logged-in user mutual funds with pagination and search',
   })
   @ApiResponse({
     status: 200,
@@ -68,11 +62,11 @@ export class MutualFundsController {
   })
   async listFunds(
     @CurrentUser() currentUser: AuthenticatedUser,
-    @Query('includeArchived') includeArchived?: string,
+    @Body() listMutualFundsDto: ListMutualFundsDto,
   ): Promise<AppResponse> {
     return await this.mutualFundsService.listFunds(
       currentUser.userId,
-      includeArchived === 'true',
+      listMutualFundsDto,
     );
   }
 
@@ -132,7 +126,7 @@ export class MutualFundsController {
     );
   }
 
-  @Post(':id/sip')
+  @Post(':id/sip/create')
   @ApiOperation({
     summary: 'Create monthly SIP entry for a mutual fund',
   })
@@ -152,9 +146,9 @@ export class MutualFundsController {
     );
   }
 
-  @Get(':id/sip')
+  @Post(':id/sip')
   @ApiOperation({
-    summary: 'List SIP entries of a mutual fund',
+    summary: 'List SIP entries of a mutual fund with pagination',
   })
   @ApiResponse({
     status: 200,
@@ -163,10 +157,12 @@ export class MutualFundsController {
   async listSipEntries(
     @CurrentUser() currentUser: AuthenticatedUser,
     @Param('id') id: string,
+    @Body() listSipEntriesDto: ListSipEntriesDto,
   ): Promise<AppResponse> {
     return await this.mutualFundsService.listSipEntries(
       currentUser.userId,
       id,
+      listSipEntriesDto,
     );
   }
 
