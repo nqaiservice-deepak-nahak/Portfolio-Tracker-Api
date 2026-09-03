@@ -69,15 +69,6 @@ export class UpdateTradeDto {
   @IsOptional()
   brokerage?: number;
 
-  @ApiProperty({
-    example: 15,
-    required: false,
-  })
-  @Type(() => Number)
-  @IsNumber()
-  @Min(0)
-  @IsOptional()
-  charges?: number;
 
   @ApiProperty({
     example: 3600,

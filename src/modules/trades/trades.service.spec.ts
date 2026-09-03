@@ -7,19 +7,30 @@ import { AbstractTradesDao } from '../../database/mongodb/abstract/trades.abstra
 import { createResponse } from '../../shared/appresponse.shared';
 import { Messages, messageFactory } from '../../shared/messages.shared';
 import { UpdateTradeDto } from './dto/update-trade.dto';
+import { AbstractBuyLotsDao } from '../../database/mongodb/abstract/buy-lots.abstract';
 
 describe('TradesService', () => {
     let service: TradesService;
+    let tradesDao: jest.Mocked<AbstractTradesDao>;
+    let buyLotsDao: jest.Mocked<AbstractBuyLotsDao>;
 
     const mockTradesDao = {
         createTrade: jest.fn(),
         listTrades: jest.fn(),
         findTrade: jest.fn(),
+        findActiveTradeBySymbol: jest.fn(),
         updateTrade: jest.fn(),
         createSell: jest.fn(),
         listSells: jest.fn(),
         listSellsForTrades: jest.fn(),
         updateTradeStatusAndPrice: jest.fn(),
+    };
+
+    const mockBuyLotsDao = {
+        createBuyLot: jest.fn().mockResolvedValue(createResponse(HttpStatus.CREATED, Messages.S2, { _id: 'mockLotId' })),
+        listBuyLotsForTrade: jest.fn().mockResolvedValue(createResponse(HttpStatus.OK, Messages.S2, [])),
+        listBuyLotsForTrades: jest.fn().mockResolvedValue(createResponse(HttpStatus.OK, Messages.S2, [])),
+        updateBuyLot: jest.fn().mockResolvedValue(createResponse(HttpStatus.OK, Messages.S2)),
     };
 
     beforeEach(async () => {
@@ -32,10 +43,25 @@ describe('TradesService', () => {
                     provide: AbstractTradesDao,
                     useValue: mockTradesDao,
                 },
+                {
+                    provide: AbstractBuyLotsDao,
+                    useValue: mockBuyLotsDao,
+                },
             ],
         }).compile();
 
         service = module.get<TradesService>(TradesService);
+        tradesDao = module.get(AbstractTradesDao);
+        buyLotsDao = module.get(AbstractBuyLotsDao);
+
+        // Default mock behaviors
+        mockTradesDao.findActiveTradeBySymbol.mockResolvedValue(createResponse(HttpStatus.NOT_FOUND, Messages.W5));
+        mockTradesDao.listSells.mockResolvedValue(createResponse(HttpStatus.OK, Messages.S23, []));
+        mockTradesDao.listSellsForTrades.mockResolvedValue(createResponse(HttpStatus.OK, Messages.S23, []));
+        mockTradesDao.updateTrade.mockResolvedValue(createResponse(HttpStatus.OK, Messages.S20, {}));
+        mockBuyLotsDao.createBuyLot.mockResolvedValue(createResponse(HttpStatus.CREATED, Messages.S2, { _id: '507f1f77bcf86cd799439099' }));
+        mockBuyLotsDao.listBuyLotsForTrade.mockResolvedValue(createResponse(HttpStatus.OK, Messages.S2, []));
+        mockBuyLotsDao.listBuyLotsForTrades.mockResolvedValue(createResponse(HttpStatus.OK, Messages.S2, []));
     });
 
     // it('should create a trade successfully', async () => {
@@ -129,15 +155,28 @@ describe('TradesService', () => {
             buyPrice: 100,
             quantity: 10,
             brokerage: 5,
-            charges: 2,
+            charges: 99999,
             currentPrice: 120,
             targetPrice: 150,
             stopLoss: 90,
             notes: '  Long term investment  ',
         };
 
+        const expectedCharges = (() => {
+            const turnover = 100 * 10;
+            const stt = turnover * 0.001;
+            const etc = turnover * 0.0000297;
+            const sebi = turnover * 0.000001;
+            const stamp = turnover * 0.00015;
+            const gst = (5 + etc + sebi) * 0.18;
+            return Number((stt + etc + sebi + stamp + gst).toFixed(2));
+        })();
+
+        const totalBuyCost = 100 * 10 + 5 + expectedCharges;
+        const averageBuyCost = totalBuyCost / 10;
+
         const fakeTrade = {
-            _id: 'trade-123',
+            _id: '507f1f77bcf86cd799439011',
             userId,
             stockSymbol: 'RELIANCE',
             companyName: 'Reliance Industries',
@@ -145,9 +184,8 @@ describe('TradesService', () => {
             buyPrice: 100,
             quantity: 10,
 
-            // Still stored in the trade
             brokerage: 5,
-            charges: 2,
+            charges: expectedCharges,
 
             currentPrice: 120,
             targetPrice: 150,
@@ -161,6 +199,22 @@ describe('TradesService', () => {
         mockTradesDao.createTrade.mockResolvedValue(
             createResponse(HttpStatus.CREATED, Messages.S17, fakeTrade),
         );
+        mockTradesDao.findTrade.mockResolvedValue(
+            createResponse(HttpStatus.OK, Messages.S19, fakeTrade),
+        );
+        // Mock the BuyLot returned after creation so FIFO computes correctly
+        const fakeLot = {
+            _id: '507f1f77bcf86cd799439099',
+            tradeId: '507f1f77bcf86cd799439011',
+            buyDate: new Date('2026-08-20'),
+            buyPrice: 100,
+            originalQuantity: 10,
+            brokerage: 5,
+            charges: expectedCharges,
+        };
+        mockBuyLotsDao.listBuyLotsForTrade.mockResolvedValue(
+            createResponse(HttpStatus.OK, Messages.S2, [fakeLot]),
+        );
 
         const result = await service.createTrade(userId, createTradeDto);
 
@@ -170,11 +224,10 @@ describe('TradesService', () => {
             companyName: 'Reliance Industries',
             buyDate: new Date('2026-08-20'),
             buyPrice: 100,
-            quantity: 10,
+            quantity: 0,
 
-            // Keep these because they are stored
-            brokerage: 5,
-            charges: 2,
+            brokerage: 0,
+            charges: 0,
 
             currentPrice: 120,
             targetPrice: 150,
@@ -185,7 +238,7 @@ describe('TradesService', () => {
             archivedAt: null,
         });
 
-        expect(result.code).toBe(HttpStatus.CREATED);
+        expect(result.code).toBe(HttpStatus.OK);
 
         const data = result.data;
 
@@ -196,17 +249,15 @@ describe('TradesService', () => {
         expect(data.soldQuantity).toBe(0);
         expect(data.remainingQuantity).toBe(10);
 
-        // Brokerage and charges are NOT included
-        // in investment/P&L calculations.
         expect(data.grossBuyValue).toBe(1000);
-        expect(data.totalBuyCost).toBe(1000);
-        expect(data.averageBuyCost).toBe(100);
+        expect(data.totalBuyCost).toBeCloseTo(totalBuyCost, 2);
+        expect(data.averageBuyCost).toBeCloseTo(averageBuyCost, 2);
 
-        // 10 × (120 - 100)
-        expect(data.unrealizedProfitLoss).toBe(200);
+        const unrealized = (120 - averageBuyCost) * 10;
+        expect(data.unrealizedProfitLoss).toBeCloseTo(unrealized, 2);
 
         expect(data.realizedProfitLoss).toBe(0);
-        expect(data.totalProfitLoss).toBe(200);
+        expect(data.totalProfitLoss).toBeCloseTo(unrealized, 2);
 
         expect(data.status).toBe(TradeStatus.OPEN);
         expect(data.isActive).toBe(true);
@@ -250,6 +301,16 @@ describe('TradesService', () => {
             quantity: 10,
         };
 
+        const expectedCharges = (() => {
+            const turnover = 100 * 10;
+            const stt = turnover * 0.001;
+            const etc = turnover * 0.0000297;
+            const sebi = turnover * 0.000001;
+            const stamp = turnover * 0.00015;
+            const gst = (0 + etc + sebi) * 0.18;
+            return Number((stt + etc + sebi + stamp + gst).toFixed(2));
+        })();
+
         const fakeTrade = {
             _id: '507f1f77bcf86cd799439011',
             userId,
@@ -259,7 +320,7 @@ describe('TradesService', () => {
             buyPrice: 100,
             quantity: 10,
             brokerage: 0,
-            charges: 0,
+            charges: expectedCharges,
             currentPrice: 100,
             targetPrice: 0,
             stopLoss: 0,
@@ -272,6 +333,21 @@ describe('TradesService', () => {
         mockTradesDao.createTrade.mockResolvedValue(
             createResponse(HttpStatus.CREATED, Messages.S17, fakeTrade),
         );
+        mockTradesDao.findTrade.mockResolvedValue(
+            createResponse(HttpStatus.OK, Messages.S19, fakeTrade),
+        );
+        const fakeLot2 = {
+            _id: 'lot-456',
+            tradeId: '507f1f77bcf86cd799439011',
+            buyDate: new Date('2026-08-20'),
+            buyPrice: 100,
+            originalQuantity: 10,
+            brokerage: 0,
+            charges: expectedCharges,
+        };
+        mockBuyLotsDao.listBuyLotsForTrade.mockResolvedValue(
+            createResponse(HttpStatus.OK, Messages.S2, [fakeLot2]),
+        );
 
         const result = await service.createTrade(userId, createTradeDto);
 
@@ -281,7 +357,7 @@ describe('TradesService', () => {
             companyName: 'Tata Consultancy Services',
             buyDate: new Date('2026-08-20'),
             buyPrice: 100,
-            quantity: 10,
+            quantity: 0,
             brokerage: 0,
             charges: 0,
             currentPrice: 100,
@@ -293,7 +369,7 @@ describe('TradesService', () => {
             archivedAt: null,
         });
 
-        expect(result.code).toBe(HttpStatus.CREATED);
+        expect(result.code).toBe(HttpStatus.OK);
         const data = result.data;
         expect(data.currentPrice).toBe(100);
         expect(data.targetPrice).toBe(0);
@@ -304,6 +380,18 @@ describe('TradesService', () => {
     it('should partially sell a trade successfully', async () => {
         const userId = 'user-123';
         const tradeId = '507f1f77bcf86cd799439011';
+
+        const sellBrokerage = 2;
+
+        const expectedSellCharges = (() => {
+            const turnover = 120 * 4;
+            const stt = turnover * 0.001;
+            const etc = turnover * 0.0000297;
+            const sebi = turnover * 0.000001;
+            const stamp = 0;
+            const gst = (sellBrokerage + etc + sebi) * 0.18;
+            return Number((stt + etc + sebi + stamp + gst).toFixed(2));
+        })();
 
         const fakeTrade = {
             _id: tradeId,
@@ -331,8 +419,8 @@ describe('TradesService', () => {
             sellDate: new Date('2026-08-25'),
             quantity: 4,
             sellPrice: 120,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sellBrokerage,
+            charges: expectedSellCharges,
             notes: '',
         };
 
@@ -362,8 +450,8 @@ describe('TradesService', () => {
             sellDate: '2026-08-25',
             quantity: 4,
             sellPrice: 120,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sellBrokerage,
+            charges: 99999,
             notes: '',
         });
 
@@ -373,8 +461,8 @@ describe('TradesService', () => {
             sellDate: new Date('2026-08-25'),
             quantity: 4,
             sellPrice: 120,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sellBrokerage,
+            charges: expectedSellCharges,
             notes: '',
         });
 
@@ -459,6 +547,16 @@ describe('TradesService', () => {
         const userId = 'user-123';
         const tradeId = '507f1f77bcf86cd799439011';
 
+        const sellBrokerage = 2;
+        const expectedSellCharges = (() => {
+            const turnover = 130 * 6;
+            const stt = turnover * 0.001;
+            const etc = turnover * 0.0000297;
+            const sebi = turnover * 0.000001;
+            const gst = (sellBrokerage + etc + sebi) * 0.18;
+            return Number((stt + etc + sebi + gst).toFixed(2));
+        })();
+
         const fakeTrade = {
             _id: tradeId,
             userId,
@@ -497,8 +595,8 @@ describe('TradesService', () => {
             sellDate: new Date('2026-08-26'),
             quantity: 6,
             sellPrice: 130,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sellBrokerage,
+            charges: expectedSellCharges,
             notes: '',
         };
 
@@ -528,8 +626,8 @@ describe('TradesService', () => {
             sellDate: '2026-08-26',
             quantity: 6,
             sellPrice: 130,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sellBrokerage,
+            charges: 99999,
             notes: '',
         });
 
@@ -539,8 +637,8 @@ describe('TradesService', () => {
             sellDate: new Date('2026-08-26'),
             quantity: 6,
             sellPrice: 130,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sellBrokerage,
+            charges: expectedSellCharges,
             notes: '',
         });
 
@@ -652,6 +750,16 @@ describe('TradesService', () => {
         const userId = 'user-123';
         const tradeId = '507f1f77bcf86cd799439011';
 
+        const sellBrokerage = 2;
+        const expectedSellCharges = (() => {
+            const turnover = 120 * 4;
+            const stt = turnover * 0.001;
+            const etc = turnover * 0.0000297;
+            const sebi = turnover * 0.000001;
+            const gst = (sellBrokerage + etc + sebi) * 0.18;
+            return Number((stt + etc + sebi + gst).toFixed(2));
+        })();
+
         const fakeTrade = {
             _id: tradeId,
             userId,
@@ -678,8 +786,8 @@ describe('TradesService', () => {
             sellDate: new Date('2026-08-26'),
             quantity: 4,
             sellPrice: 120,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sellBrokerage,
+            charges: expectedSellCharges,
             notes: '',
         };
 
@@ -709,8 +817,8 @@ describe('TradesService', () => {
             sellDate: '2026-08-26',
             quantity: 4,
             sellPrice: 120,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sellBrokerage,
+            charges: 99999,
             notes: '',
         });
 
@@ -720,8 +828,8 @@ describe('TradesService', () => {
             sellDate: new Date('2026-08-26'),
             quantity: 4,
             sellPrice: 120,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sellBrokerage,
+            charges: expectedSellCharges,
             notes: '',
         });
 
@@ -818,6 +926,14 @@ describe('TradesService', () => {
         const userId = 'user-123';
         const tradeId = '507f1f77bcf86cd799439011';
 
+        const tradeBrokerage = 5;
+        const tradeCharges = 2;
+
+        const sellBrokerage = 2;
+        const sellCharges = 3;
+
+        const averageBuyCost = (100 * 10 + tradeBrokerage + tradeCharges) / 10;
+
         const fakeTrade = {
             _id: tradeId,
             userId,
@@ -826,8 +942,8 @@ describe('TradesService', () => {
             buyDate: new Date('2026-08-20'),
             buyPrice: 100,
             quantity: 10,
-            brokerage: 5,
-            charges: 2,
+            brokerage: tradeBrokerage,
+            charges: tradeCharges,
             currentPrice: 120,
             targetPrice: 150,
             stopLoss: 90,
@@ -844,8 +960,8 @@ describe('TradesService', () => {
             sellDate: new Date('2026-08-26'),
             quantity: 4,
             sellPrice: 120,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sellBrokerage,
+            charges: sellCharges,
             notes: '',
         };
 
@@ -883,8 +999,8 @@ describe('TradesService', () => {
             sellDate: '2026-08-26',
             quantity: 4,
             sellPrice: 120,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sellBrokerage,
+            charges: 99999,
             notes: '',
         });
 
@@ -895,9 +1011,8 @@ describe('TradesService', () => {
         expect(data.soldQuantity).toBe(4);
         expect(data.remainingQuantity).toBe(6);
 
-        // Brokerage and charges are stored but NOT included in P/L.
-        // (120 - 100) × 4 = 80
-        expect(data.realizedProfitLoss).toBeCloseTo(80, 2);
+        const expectedRealized = (120 * 4 - sellBrokerage - sellCharges) - (4 * averageBuyCost);
+        expect(data.realizedProfitLoss).toBeCloseTo(expectedRealized, 2);
     });
 
     // it('should calculate unrealized profit correctly for the remaining quantity after a partial sell', async () => {
@@ -988,6 +1103,15 @@ describe('TradesService', () => {
         const userId = 'user-123';
         const tradeId = '507f1f77bcf86cd799439011';
 
+        const tradeBrokerage = 5;
+        const tradeCharges = 2;
+
+        const sellBrokerage = 2;
+        const sellCharges = 3;
+
+        const averageBuyCost = (100 * 10 + tradeBrokerage + tradeCharges) / 10;
+        const totalBuyCost = 100 * 10 + tradeBrokerage + tradeCharges;
+
         const fakeTrade = {
             _id: tradeId,
             userId,
@@ -996,8 +1120,8 @@ describe('TradesService', () => {
             buyDate: new Date('2026-08-20'),
             buyPrice: 100,
             quantity: 10,
-            brokerage: 5,
-            charges: 2,
+            brokerage: tradeBrokerage,
+            charges: tradeCharges,
             currentPrice: 120,
             targetPrice: 150,
             stopLoss: 90,
@@ -1014,8 +1138,8 @@ describe('TradesService', () => {
             sellDate: new Date('2026-08-26'),
             quantity: 4,
             sellPrice: 120,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sellBrokerage,
+            charges: sellCharges,
             notes: '',
         };
 
@@ -1053,8 +1177,8 @@ describe('TradesService', () => {
             sellDate: '2026-08-26',
             quantity: 4,
             sellPrice: 120,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sellBrokerage,
+            charges: 99999,
             notes: '',
         });
 
@@ -1065,17 +1189,14 @@ describe('TradesService', () => {
         expect(data.soldQuantity).toBe(4);
         expect(data.remainingQuantity).toBe(6);
 
-        // Realized P/L:
-        // (120 - 100) × 4 = 80
-        expect(data.realizedProfitLoss).toBeCloseTo(80, 2);
+        const expectedRealized = (120 * 4 - sellBrokerage - sellCharges) - (4 * averageBuyCost);
+        expect(data.realizedProfitLoss).toBeCloseTo(expectedRealized, 2);
 
-        // Unrealized P/L:
-        // (120 - 100) × 6 = 120
-        expect(data.unrealizedProfitLoss).toBeCloseTo(120, 2);
+        const expectedUnrealized = 6 * 120 - 6 * averageBuyCost;
+        expect(data.unrealizedProfitLoss).toBeCloseTo(expectedUnrealized, 2);
 
-        // Total P/L:
-        // 80 + 120 = 200
-        expect(data.totalProfitLoss).toBeCloseTo(200, 2);
+        const expectedTotal = expectedRealized + expectedUnrealized;
+        expect(data.totalProfitLoss).toBeCloseTo(expectedTotal, 2);
     });
 
     // it('should have zero unrealized profit when the entire trade is sold', async () => {
@@ -1160,6 +1281,14 @@ describe('TradesService', () => {
         const userId = 'user-123';
         const tradeId = '507f1f77bcf86cd799439011';
 
+        const tradeBrokerage = 5;
+        const tradeCharges = 2;
+
+        const sellBrokerage = 2;
+        const sellCharges = 3;
+
+        const averageBuyCost = (100 * 10 + tradeBrokerage + tradeCharges) / 10;
+
         const fakeTrade = {
             _id: tradeId,
             userId,
@@ -1168,8 +1297,8 @@ describe('TradesService', () => {
             buyDate: new Date('2026-08-20'),
             buyPrice: 100,
             quantity: 10,
-            brokerage: 5,
-            charges: 2,
+            brokerage: tradeBrokerage,
+            charges: tradeCharges,
             currentPrice: 100,
             targetPrice: 150,
             stopLoss: 90,
@@ -1186,8 +1315,8 @@ describe('TradesService', () => {
             sellDate: new Date('2026-08-26'),
             quantity: 10,
             sellPrice: 120,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sellBrokerage,
+            charges: sellCharges,
             notes: '',
         };
 
@@ -1225,8 +1354,8 @@ describe('TradesService', () => {
             sellDate: '2026-08-26',
             quantity: 10,
             sellPrice: 120,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sellBrokerage,
+            charges: 99999,
             notes: '',
         });
 
@@ -1237,15 +1366,12 @@ describe('TradesService', () => {
         expect(data.soldQuantity).toBe(10);
         expect(data.remainingQuantity).toBe(0);
 
-        // (120 - 100) × 10 = 200
-        // Brokerage and charges are NOT included.
-        expect(data.realizedProfitLoss).toBeCloseTo(200, 2);
+        const expectedRealized = (120 * 10 - sellBrokerage - sellCharges) - (10 * averageBuyCost);
+        expect(data.realizedProfitLoss).toBeCloseTo(expectedRealized, 2);
 
-        // Nothing remains to be held.
         expect(data.unrealizedProfitLoss).toBe(0);
 
-        // Total = realized + unrealized
-        expect(data.totalProfitLoss).toBeCloseTo(200, 2);
+        expect(data.totalProfitLoss).toBeCloseTo(expectedRealized, 2);
 
         expect(data.status).toBe(TradeStatus.CLOSED);
     });
@@ -1668,6 +1794,24 @@ describe('TradesService', () => {
         const userId = 'user-123';
         const tradeId = '507f1f77bcf86cd799439011';
 
+        const tradeBrokerage = 5;
+        const tradeCharges = 2;
+
+        const sell1Brokerage = 2;
+        const sell1Charges = 3;
+
+        const sell2Brokerage = 2;
+        const sell2ExpectedCharges = (() => {
+            const turnover = 130 * 2;
+            const stt = turnover * 0.001;
+            const etc = turnover * 0.0000297;
+            const sebi = turnover * 0.000001;
+            const gst = (sell2Brokerage + etc + sebi) * 0.18;
+            return Number((stt + etc + sebi + gst).toFixed(2));
+        })();
+
+        const averageBuyCost = (100 * 10 + tradeBrokerage + tradeCharges) / 10;
+
         const fakeTrade = {
             _id: tradeId,
             userId,
@@ -1676,8 +1820,8 @@ describe('TradesService', () => {
             buyDate: new Date('2026-08-20'),
             buyPrice: 100,
             quantity: 10,
-            brokerage: 5,
-            charges: 2,
+            brokerage: tradeBrokerage,
+            charges: tradeCharges,
             currentPrice: 120,
             targetPrice: 150,
             stopLoss: 90,
@@ -1694,8 +1838,8 @@ describe('TradesService', () => {
             sellDate: new Date('2026-08-25'),
             quantity: 3,
             sellPrice: 120,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sell1Brokerage,
+            charges: sell1Charges,
             notes: '',
         };
 
@@ -1706,8 +1850,8 @@ describe('TradesService', () => {
             sellDate: new Date('2026-08-26'),
             quantity: 2,
             sellPrice: 130,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sell2Brokerage,
+            charges: sell2ExpectedCharges,
             notes: '',
         };
 
@@ -1747,8 +1891,8 @@ describe('TradesService', () => {
             sellDate: '2026-08-26',
             quantity: 2,
             sellPrice: 130,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sell2Brokerage,
+            charges: 99999,
             notes: '',
         });
 
@@ -1759,22 +1903,16 @@ describe('TradesService', () => {
         expect(data.soldQuantity).toBe(5);
         expect(data.remainingQuantity).toBe(5);
 
-        // First sell:
-        // (120 - 100) × 3 = 60
-        //
-        // Second sell:
-        // (130 - 100) × 2 = 60
-        //
-        // Total realized P/L = 120
-        expect(data.realizedProfitLoss).toBeCloseTo(120, 2);
+        const expectedRealized1 = (120 * 3 - sell1Brokerage - sell1Charges) - (3 * averageBuyCost);
+        const expectedRealized2 = (130 * 2 - sell2Brokerage - sell2ExpectedCharges) - (2 * averageBuyCost);
+        const totalExpectedRealized = expectedRealized1 + expectedRealized2;
+        expect(data.realizedProfitLoss).toBeCloseTo(totalExpectedRealized, 2);
 
-        // Remaining 5 shares:
-        // (130 - 100) × 5 = 150
-        expect(data.unrealizedProfitLoss).toBeCloseTo(150, 2);
+        const expectedUnrealized = 5 * 130 - 5 * averageBuyCost;
+        expect(data.unrealizedProfitLoss).toBeCloseTo(expectedUnrealized, 2);
 
-        // Total P/L:
-        // 120 + 150 = 270
-        expect(data.totalProfitLoss).toBeCloseTo(270, 2);
+        const expectedTotal = totalExpectedRealized + expectedUnrealized;
+        expect(data.totalProfitLoss).toBeCloseTo(expectedTotal, 2);
 
         expect(data.status).toBe(TradeStatus.PARTIALLY_SOLD);
     });
@@ -1861,6 +1999,14 @@ describe('TradesService', () => {
         const userId = 'user-123';
         const tradeId = '507f1f77bcf86cd799439011';
 
+        const tradeBrokerage = 5;
+        const tradeCharges = 2;
+
+        const sellBrokerage = 2;
+        const sellCharges = 3;
+
+        const averageBuyCost = (100 * 10 + tradeBrokerage + tradeCharges) / 10;
+
         const fakeTrade = {
             _id: tradeId,
             userId,
@@ -1869,8 +2015,8 @@ describe('TradesService', () => {
             buyDate: new Date('2026-08-20'),
             buyPrice: 100,
             quantity: 10,
-            brokerage: 5,
-            charges: 2,
+            brokerage: tradeBrokerage,
+            charges: tradeCharges,
             currentPrice: 100,
             targetPrice: 150,
             stopLoss: 90,
@@ -1887,8 +2033,8 @@ describe('TradesService', () => {
             sellDate: new Date('2026-08-26'),
             quantity: 5,
             sellPrice: 80,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sellBrokerage,
+            charges: sellCharges,
             notes: '',
         };
 
@@ -1926,8 +2072,8 @@ describe('TradesService', () => {
             sellDate: '2026-08-26',
             quantity: 5,
             sellPrice: 80,
-            brokerage: 2,
-            charges: 3,
+            brokerage: sellBrokerage,
+            charges: 99999,
             notes: '',
         });
 
@@ -1938,17 +2084,14 @@ describe('TradesService', () => {
         expect(data.soldQuantity).toBe(5);
         expect(data.remainingQuantity).toBe(5);
 
-        // Realized P/L:
-        // (80 - 100) × 5 = -100
-        expect(data.realizedProfitLoss).toBeCloseTo(-100, 2);
+        const expectedRealized = (80 * 5 - sellBrokerage - sellCharges) - (5 * averageBuyCost);
+        expect(data.realizedProfitLoss).toBeCloseTo(expectedRealized, 2);
 
-        // Unrealized P/L:
-        // (80 - 100) × 5 = -100
-        expect(data.unrealizedProfitLoss).toBeCloseTo(-100, 2);
+        const expectedUnrealized = 5 * 80 - 5 * averageBuyCost;
+        expect(data.unrealizedProfitLoss).toBeCloseTo(expectedUnrealized, 2);
 
-        // Total P/L:
-        // -100 + (-100) = -200
-        expect(data.totalProfitLoss).toBeCloseTo(-200, 2);
+        const expectedTotal = expectedRealized + expectedUnrealized;
+        expect(data.totalProfitLoss).toBeCloseTo(expectedTotal, 2);
 
         expect(data.status).toBe(TradeStatus.PARTIALLY_SOLD);
     });
@@ -1956,6 +2099,14 @@ describe('TradesService', () => {
     it('should include brokerage and charges when calculating realized P&L', async () => {
         const userId = 'user-123';
         const tradeId = '507f1f77bcf86cd799439011';
+
+        const tradeBrokerage = 10;
+        const tradeCharges = 5;
+
+        const sellBrokerage = 10;
+        const sellCharges = 5;
+
+        const averageBuyCost = (100 * 10 + tradeBrokerage + tradeCharges) / 10;
 
         const fakeTrade = {
             _id: tradeId,
@@ -1965,8 +2116,8 @@ describe('TradesService', () => {
             buyDate: new Date('2026-08-20'),
             buyPrice: 100,
             quantity: 10,
-            brokerage: 10,
-            charges: 5,
+            brokerage: tradeBrokerage,
+            charges: tradeCharges,
             currentPrice: 100,
             targetPrice: 150,
             stopLoss: 90,
@@ -1983,8 +2134,8 @@ describe('TradesService', () => {
             sellDate: new Date('2026-08-26'),
             quantity: 10,
             sellPrice: 120,
-            brokerage: 10,
-            charges: 5,
+            brokerage: sellBrokerage,
+            charges: sellCharges,
             notes: '',
         };
 
@@ -2014,8 +2165,8 @@ describe('TradesService', () => {
             sellDate: '2026-08-26',
             quantity: 10,
             sellPrice: 120,
-            brokerage: 10,
-            charges: 5,
+            brokerage: sellBrokerage,
+            charges: 99999,
             notes: '',
         });
 
@@ -2024,9 +2175,10 @@ describe('TradesService', () => {
         expect(data.soldQuantity).toBe(10);
         expect(data.remainingQuantity).toBe(0);
 
-        expect(data.realizedProfitLoss).toBeCloseTo(200, 2);
+        const expectedRealized = (120 * 10 - sellBrokerage - sellCharges) - (10 * averageBuyCost);
+        expect(data.realizedProfitLoss).toBeCloseTo(expectedRealized, 2);
         expect(data.unrealizedProfitLoss).toBe(0);
-        expect(data.totalProfitLoss).toBeCloseTo(200, 2);
+        expect(data.totalProfitLoss).toBeCloseTo(expectedRealized, 2);
 
         expect(data.status).toBe(TradeStatus.CLOSED);
     });
@@ -2425,6 +2577,7 @@ describe('TradesService', () => {
         const updatedTrade = {
             ...fakeTrade,
             quantity: 6,
+            charges: 1.61,
         };
 
         const fakeSells = [
@@ -2465,6 +2618,7 @@ describe('TradesService', () => {
             tradeId,
             {
                 quantity: 6,
+                charges: 99999,
             },
         );
 
@@ -2473,6 +2627,7 @@ describe('TradesService', () => {
             tradeId,
             {
                 quantity: 6,
+                charges: 1.61,
             },
         );
 
@@ -2801,11 +2956,11 @@ describe('TradesService', () => {
         // 120 × 5 = 600
         expect(data[0].grossSellValue).toBe(600);
 
-        // Brokerage and charges are not deducted.
-        expect(data[0].netSellValue).toBe(600);
+        // netSellValue = 600 - 2 - 3 = 595
+        expect(data[0].netSellValue).toBe(595);
 
-        // (120 - 100) × 5 = 100
-        expect(data[0].realizedProfitLoss).toBe(100);
+        // avgBuyCost = (1000+5+2)/10 = 100.7, realized = 595 - 5*100.7 = 91.5
+        expect(data[0].realizedProfitLoss).toBe(91.5);
 
         // Brokerage and charges are still stored/returned.
         expect(data[0].brokerage).toBe(2);
@@ -2958,16 +3113,16 @@ describe('TradesService', () => {
         expect(data[0].remainingQuantity).toBe(5);
 
         // Realized P/L:
-        // (120 - 100) × 5 = 100
-        expect(data[0].realizedProfitLoss).toBeCloseTo(100, 2);
+        // avgBuyCost = (1000+5+2)/10 = 100.7, netSell = 5*120-2-3 = 595, realized = 595 - 5*100.7 = 91.5
+        expect(data[0].realizedProfitLoss).toBeCloseTo(91.5, 2);
 
         // Unrealized P/L:
-        // (120 - 100) × 5 = 100
-        expect(data[0].unrealizedProfitLoss).toBeCloseTo(100, 2);
+        // 5 * (120 - 100.7) = 96.5
+        expect(data[0].unrealizedProfitLoss).toBeCloseTo(96.5, 2);
 
         // Total P/L:
-        // 100 + 100 = 200
-        expect(data[0].totalProfitLoss).toBeCloseTo(200, 2);
+        // 91.5 + 96.5 = 188
+        expect(data[0].totalProfitLoss).toBeCloseTo(188, 2);
 
         expect(data[0].status).toBe(TradeStatus.PARTIALLY_SOLD);
     });
@@ -3084,14 +3239,14 @@ describe('TradesService', () => {
         expect(data[0].remainingQuantity).toBe(0);
 
         // Realized P/L:
-        // (120 - 100) × 10 = 200
-        expect(data[0].realizedProfitLoss).toBeCloseTo(200, 2);
+        // avgBuyCost = (1000+5+2)/10 = 100.7, netSell = 1200-5-5 = 1190, realized = 1190 - 10*100.7 = 183
+        expect(data[0].realizedProfitLoss).toBeCloseTo(183, 2);
 
         // Entire quantity is sold.
         expect(data[0].unrealizedProfitLoss).toBe(0);
 
         // Total P/L = realized P/L + unrealized P/L
-        expect(data[0].totalProfitLoss).toBeCloseTo(200, 2);
+        expect(data[0].totalProfitLoss).toBeCloseTo(183, 2);
 
         expect(data[0].status).toBe(TradeStatus.CLOSED);
     });
@@ -3938,7 +4093,7 @@ describe('TradesService', () => {
             companyName: 'New Company',
             buyPrice: 150,
             brokerage: 20,
-            charges: 10,
+            charges: 5.38,
             stopLoss: 130,
         };
 
@@ -3967,7 +4122,7 @@ describe('TradesService', () => {
             companyName: ' New Company ',
             buyPrice: 150,
             brokerage: 20,
-            charges: 10,
+            charges: 99999,
             stopLoss: 130,
         } as UpdateTradeDto);
 
@@ -3979,7 +4134,7 @@ describe('TradesService', () => {
                 companyName: 'New Company',
                 buyPrice: 150,
                 brokerage: 20,
-                charges: 10,
+                charges: 5.38,
                 stopLoss: 130,
             },
         );
@@ -3990,7 +4145,7 @@ describe('TradesService', () => {
         expect(data.companyName).toBe('New Company');
         expect(data.buyPrice).toBe(150);
         expect(data.brokerage).toBe(20);
-        expect(data.charges).toBe(10);
+        expect(data.charges).toBe(5.38);
         expect(data.stopLoss).toBe(130);
     });
 
@@ -4023,7 +4178,7 @@ describe('TradesService', () => {
             companyName: 'Tata Consultancy Services',
             buyPrice: 200,
             brokerage: 10,
-            charges: 5,
+            charges: 4.17,
             stopLoss: 150,
         };
 
@@ -4052,7 +4207,7 @@ describe('TradesService', () => {
             companyName: ' Tata Consultancy Services ',
             buyPrice: 200,
             brokerage: 10,
-            charges: 5,
+            charges: 99999,
             stopLoss: 150,
         });
 
@@ -4064,7 +4219,7 @@ describe('TradesService', () => {
                 companyName: 'Tata Consultancy Services',
                 buyPrice: 200,
                 brokerage: 10,
-                charges: 5,
+                charges: 4.17,
                 stopLoss: 150,
             },
         );
@@ -4075,7 +4230,7 @@ describe('TradesService', () => {
         expect(data.companyName).toBe('Tata Consultancy Services');
         expect(data.buyPrice).toBe(200);
         expect(data.brokerage).toBe(10);
-        expect(data.charges).toBe(5);
+        expect(data.charges).toBe(4.17);
         expect(data.stopLoss).toBe(150);
     });
 
@@ -4180,13 +4335,12 @@ describe('TradesService', () => {
             companyName: 'Reliance Industries',
             buyDate: new Date('2026-08-20'),
             buyPrice: 0,
-            quantity: 1,
+            quantity: 0,
 
-            // Stored for record keeping, but NOT used in P/L calculations.
-            brokerage: 1,
-            charges: 1,
+            brokerage: 0,
+            charges: 0,
 
-            currentPrice: 1,
+            currentPrice: 0,
             targetPrice: 150,
             stopLoss: 90,
             notes: '',

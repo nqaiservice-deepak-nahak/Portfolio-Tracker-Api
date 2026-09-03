@@ -12,6 +12,10 @@ export abstract class AbstractTradesDao {
     userId: string,
     tradeId: string,
   ): Promise<AppResponse>;
+  abstract findActiveTradeBySymbol(
+    userId: string,
+    stockSymbol: string,
+  ): Promise<AppResponse>;
   abstract updateTrade(
     userId: string,
     tradeId: string,

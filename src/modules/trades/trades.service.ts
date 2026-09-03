@@ -5,12 +5,14 @@ import type { AppResponse } from '../../shared/appresponse.shared';
 import { createResponse } from '../../shared/appresponse.shared';
 import { messageFactory, Messages } from '../../shared/messages.shared';
 import { AbstractTradesDao } from '../../database/mongodb/abstract/trades.abstract';
+import { AbstractBuyLotsDao } from '../../database/mongodb/abstract/buy-lots.abstract';
 import {
   Trade,
   TradeDocument,
   TradeStatus,
 } from '../../database/schemas/trade.schema';
 import { TradeSellDocument } from '../../database/schemas/trade-sell.schema';
+import { BuyLotDocument } from '../../database/schemas/buy-lot.schema';
 import { CreateTradeDto } from './dto/create-trade.dto';
 import { UpdateTradeDto } from './dto/update-trade.dto';
 import { CreateTradeSellDto } from './dto/create-trade-sell.sto';
@@ -21,10 +23,15 @@ import {
 } from './trades.abstract';
 import { ListTradesDto, ListTradeSellsDto } from './dto/list-trades.dto';
 import { calculatePaginationMeta, skipAndLimit } from '../../shared/pagination.shared';
+import { computeCharges } from '../../core/utils/calculations/trade-charges.util';
+import { calculateFifoPosition } from '../../core/utils/calculations/fifo-matching.util';
 
 @Injectable()
 export class TradesService extends TradesAbstract {
-  constructor(private readonly tradesDao: AbstractTradesDao) {
+  constructor(
+    private readonly tradesDao: AbstractTradesDao,
+    private readonly buyLotsDao: AbstractBuyLotsDao,
+  ) {
     super();
   }
 
@@ -49,35 +56,106 @@ export class TradesService extends TradesAbstract {
         return createResponse(HttpStatus.BAD_REQUEST, Messages.W27);
       }
 
-      const createRes = await this.tradesDao.createTrade({
-        userId,
-        stockSymbol: createTradeDto.stockSymbol.trim().toUpperCase(),
-        companyName: createTradeDto.companyName.trim(),
-        buyDate: buyDate,
-        buyPrice: createTradeDto.buyPrice,
+      const buyBrokerage = createTradeDto.brokerage || 0;
+      const buyCharges = computeCharges({
+        price: createTradeDto.buyPrice,
         quantity: createTradeDto.quantity,
-        brokerage: createTradeDto.brokerage || 0,
-        charges: createTradeDto.charges || 0,
-        currentPrice: createTradeDto.currentPrice || createTradeDto.buyPrice,
-        targetPrice: createTradeDto.targetPrice || 0,
-        stopLoss: createTradeDto.stopLoss || 0,
-        notes: createTradeDto.notes?.trim() || '',
-        status: TradeStatus.OPEN,
-        isActive: true,
-        archivedAt: null,
+        brokerage: buyBrokerage,
+        transactionType: 'BUY',
       });
 
-      if (createRes.code !== HttpStatus.CREATED) {
-        return createRes;
+      const stockSymbol = createTradeDto.stockSymbol.trim().toUpperCase();
+      
+      // Check for existing open position for this symbol
+      const existingTradeRes = await this.tradesDao.findActiveTradeBySymbol(userId, stockSymbol);
+      let trade: TradeDocument;
+
+      if (existingTradeRes.code === HttpStatus.OK) {
+        trade = existingTradeRes.data as TradeDocument;
+        // Position exists. We will add a new BuyLot to it.
+      } else {
+        // No active position exists, create a new Trade record
+        const createRes = await this.tradesDao.createTrade({
+          userId,
+          stockSymbol,
+          companyName: createTradeDto.companyName.trim(),
+          buyDate: buyDate,
+          buyPrice: createTradeDto.buyPrice, // Will be maintained as average later
+          quantity: 0, // Will be updated via BuyLots
+          brokerage: 0,
+          charges: 0,
+          currentPrice: createTradeDto.currentPrice || createTradeDto.buyPrice,
+          targetPrice: createTradeDto.targetPrice || 0,
+          stopLoss: createTradeDto.stopLoss || 0,
+          notes: createTradeDto.notes?.trim() || '',
+          status: TradeStatus.OPEN,
+          isActive: true,
+          archivedAt: null,
+        });
+
+        if (createRes.code !== HttpStatus.CREATED) {
+          return createRes;
+        }
+        trade = createRes.data as TradeDocument;
       }
 
-      const trade = createRes.data as TradeDocument;
-      const summary = this.buildTradeSummary(trade, []);
+      // Create the BuyLot
+      const lotCreateRes = await this.buyLotsDao.createBuyLot({
+        userId,
+        tradeId: trade._id.toString(),
+        buyDate,
+        buyPrice: createTradeDto.buyPrice,
+        originalQuantity: createTradeDto.quantity,
+        brokerage: buyBrokerage,
+        charges: buyCharges,
+      });
 
-      return createResponse(HttpStatus.CREATED, Messages.S17, summary);
+      if (lotCreateRes.code !== HttpStatus.CREATED) {
+        return lotCreateRes;
+      }
+
+      // After adding a lot, re-run FIFO to sync the Trade document's fields
+      await this.syncTradeWithLotsAndSells(userId, trade);
+
+      return this.getTradeById(userId, trade._id.toString());
     } catch (error: any) {
       return createResponse(HttpStatus.INTERNAL_SERVER_ERROR, Messages.E2);
     }
+  }
+
+  /**
+   * Helper to recalculate and update a Trade's quantity and average cost based on its Lots and Sells.
+   * Accepts the already-fetched trade to avoid a redundant DB call.
+   */
+  private async syncTradeWithLotsAndSells(userId: string, trade: TradeDocument) {
+    const tradeId = trade._id.toString();
+
+    const lotsRes = await this.buyLotsDao.listBuyLotsForTrade(tradeId);
+    const sellsRes = await this.tradesDao.listSells(userId, tradeId);
+    
+    let buyLots = lotsRes.code === HttpStatus.OK ? (lotsRes.data as BuyLotDocument[]) : [];
+    if (buyLots.length === 0 && trade.quantity > 0) {
+      // Fallback for pre-migration data: synthesise a single virtual lot from the trade itself
+      buyLots = [{
+        _id: trade._id,
+        tradeId: trade._id,
+        buyDate: trade.buyDate,
+        buyPrice: trade.buyPrice,
+        originalQuantity: trade.quantity,
+        brokerage: trade.brokerage,
+        charges: trade.charges,
+      } as any];
+    }
+    if (buyLots.length === 0) return; // No lots yet — nothing to sync
+    const sells = sellsRes.code === HttpStatus.OK ? (sellsRes.data as TradeSellDocument[]) : [];
+
+    const fifoResult = calculateFifoPosition(buyLots, sells);
+
+    // Update Trade document with latest totals
+    await this.tradesDao.updateTrade(userId, tradeId, {
+      quantity: fifoResult.totalOriginalQuantity, // total historical quantity ever bought
+      buyPrice: fifoResult.averageBuyPrice,        // stored as cost-inclusive average
+    });
   }
 
   async listTrades(
@@ -105,19 +183,39 @@ export class TradesService extends TradesAbstract {
       const tradeIds = pageTrades.map((trade) => trade._id.toString());
 
       let sells: TradeSellDocument[] = [];
+      let buyLots: BuyLotDocument[] = [];
       if (tradeIds.length > 0) {
         const sellsRes = await this.tradesDao.listSellsForTrades(userId, tradeIds);
         if (sellsRes.code !== HttpStatus.OK) {
           return sellsRes;
         }
         sells = sellsRes.data as TradeSellDocument[];
+
+        const lotsRes = await this.buyLotsDao.listBuyLotsForTrades(tradeIds);
+        if (lotsRes.code === HttpStatus.OK) {
+          buyLots = lotsRes.data as BuyLotDocument[];
+        }
       }
 
       const summaries = pageTrades.map((trade) => {
         const tradeSells = sells.filter(
           (sell) => sell.tradeId.toString() === trade._id.toString(),
         );
-        return this.buildTradeSummary(trade, tradeSells);
+        let tradeLots = buyLots.filter(
+          (lot) => lot.tradeId.toString() === trade._id.toString(),
+        );
+        if (tradeLots.length === 0) {
+          tradeLots = [{
+            _id: trade._id,
+            tradeId: trade._id,
+            buyDate: trade.buyDate,
+            buyPrice: trade.buyPrice,
+            originalQuantity: trade.quantity,
+            brokerage: trade.brokerage,
+            charges: trade.charges,
+          } as any];
+        }
+        return this.buildTradeSummary(trade, tradeLots, tradeSells);
       });
 
       const response = {
@@ -147,7 +245,21 @@ export class TradesService extends TradesAbstract {
       }
       const sells = sellsRes.data as TradeSellDocument[];
 
-      const summary = this.buildTradeSummary(trade, sells);
+      const lotsRes = await this.buyLotsDao.listBuyLotsForTrade(tradeId);
+      let lots = lotsRes.code === HttpStatus.OK ? (lotsRes.data as BuyLotDocument[]) : [];
+      if (lots.length === 0 && trade.quantity > 0) {
+        lots = [{
+          _id: trade._id,
+          tradeId: trade._id,
+          buyDate: trade.buyDate,
+          buyPrice: trade.buyPrice,
+          originalQuantity: trade.quantity,
+          brokerage: trade.brokerage,
+          charges: trade.charges,
+        } as any];
+      }
+
+      const summary = this.buildTradeSummary(trade, lots, sells);
       return createResponse(HttpStatus.OK, Messages.S19, summary);
     } catch (error: any) {
       return createResponse(HttpStatus.INTERNAL_SERVER_ERROR, Messages.E2);
@@ -223,8 +335,18 @@ export class TradesService extends TradesAbstract {
         updatePayload.brokerage = updateTradeDto.brokerage;
       }
 
-      if (updateTradeDto.charges !== undefined) {
-        updatePayload.charges = updateTradeDto.charges;
+      // Recompute charges server-side whenever any of the inputs change.
+      // Client-supplied charges are never trusted.
+      const priceChanged = updateTradeDto.buyPrice !== undefined;
+      const qtyChanged = updateTradeDto.quantity !== undefined;
+      const brokerageChanged = updateTradeDto.brokerage !== undefined;
+      if (priceChanged || qtyChanged || brokerageChanged) {
+        updatePayload.charges = computeCharges({
+          price: updatePayload.buyPrice ?? trade.buyPrice,
+          quantity: updatePayload.quantity ?? trade.quantity,
+          brokerage: updatePayload.brokerage ?? trade.brokerage,
+          transactionType: 'BUY',
+        });
       }
 
       if (updateTradeDto.currentPrice !== undefined) {
@@ -352,14 +474,22 @@ export class TradesService extends TradesAbstract {
         );
       }
 
+      const sellBrokerage = createTradeSellDto.brokerage || 0;
+      const sellCharges = computeCharges({
+        price: createTradeSellDto.sellPrice,
+        quantity: createTradeSellDto.quantity,
+        brokerage: sellBrokerage,
+        transactionType: 'SELL',
+      });
+
       const sellCreateRes = await this.tradesDao.createSell({
         userId,
         tradeId,
         sellDate: new Date(createTradeSellDto.sellDate),
         quantity: createTradeSellDto.quantity,
         sellPrice: createTradeSellDto.sellPrice,
-        brokerage: createTradeSellDto.brokerage || 0,
-        charges: createTradeSellDto.charges || 0,
+        brokerage: sellBrokerage,
+        charges: sellCharges,
         notes: createTradeSellDto.notes?.trim() || '',
       });
       if (sellCreateRes.code !== HttpStatus.CREATED) {
@@ -406,8 +536,30 @@ export class TradesService extends TradesAbstract {
       }
       const sells = sellsRes.data as TradeSellDocument[];
 
-      const averageBuyCost = this.calculateAverageBuyCost(trade);
-      if (!listTradeSellsDto) return createResponse(HttpStatus.OK, Messages.S23, sells.map((sell) => this.buildSellSummary(sell, averageBuyCost)));
+      const lotsRes = await this.buyLotsDao.listBuyLotsForTrade(tradeId);
+      let buyLots = lotsRes.code === HttpStatus.OK ? (lotsRes.data as BuyLotDocument[]) : [];
+      if (buyLots.length === 0) {
+        buyLots = [{
+          _id: trade._id,
+          tradeId: trade._id,
+          buyDate: trade.buyDate,
+          buyPrice: trade.buyPrice,
+          originalQuantity: trade.quantity,
+          brokerage: trade.brokerage,
+          charges: trade.charges,
+        } as any];
+      }
+      
+      const fifoResult = calculateFifoPosition(buyLots, sells);
+      const averageBuyCost = trade.buyPrice; // fallback
+
+      const getRealizedCost = (sellId: string, sellQty: number) => {
+        const sr = fifoResult.sellResults.find(s => s.sellId === sellId);
+        return sr ? sr.realizedCost : sellQty * averageBuyCost;
+      };
+
+      if (!listTradeSellsDto) return createResponse(HttpStatus.OK, Messages.S23, sells.map((sell) => this.buildSellSummary(sell, getRealizedCost(sell._id.toString(), sell.quantity))));
+      
       const { page = 1, limit = 10, sortOrder = 'desc' } = listTradeSellsDto;
       const orderedSells = [...sells].sort((a, b) =>
         sortOrder === 'asc'
@@ -416,7 +568,7 @@ export class TradesService extends TradesAbstract {
       );
       const { skip } = skipAndLimit(page, limit);
       const summaries = orderedSells.slice(skip, skip + limit).map((sell) =>
-        this.buildSellSummary(sell, averageBuyCost),
+        this.buildSellSummary(sell, getRealizedCost(sell._id.toString(), sell.quantity)),
       );
       return createResponse(HttpStatus.OK, Messages.S23, {
         data: summaries,
@@ -443,17 +595,29 @@ export class TradesService extends TradesAbstract {
 
   private buildTradeSummary(
     trade: TradeDocument,
+    buyLots: BuyLotDocument[],
     sells: TradeSellDocument[],
   ): TradeSummary {
-    const soldQuantity = this.calculateSoldQuantity(sells);
-    const remainingQuantity = trade.quantity - soldQuantity;
+    const fifoResult = calculateFifoPosition(buyLots, sells);
+    const soldQuantity = sells.reduce((sum, sell) => sum + sell.quantity, 0);
+    const remainingQuantity = fifoResult.remainingQuantity;
     const grossBuyValue = trade.buyPrice * trade.quantity;
     const totalBuyCost = this.calculateTotalBuyCost(trade);
-    const averageBuyCost = this.calculateAverageBuyCost(trade);
+    // Use FIFO-derived average: cost-inclusive average per share
+    const averageBuyCost = fifoResult.averageBuyPrice > 0
+      ? fifoResult.averageBuyPrice
+      : trade.buyPrice;
 
-    const sellSummaries = sells.map((sell) =>
-      this.buildSellSummary(sell, averageBuyCost),
-    );
+    const sellSummaries = sells.map((sell) => {
+      const fifoSellResult = fifoResult.sellResults.find(
+        (sr) => sr.sellId === sell._id.toString(),
+      );
+      // If lot matching failed somehow, fallback to average
+      const realizedCost = fifoSellResult
+        ? fifoSellResult.realizedCost
+        : sell.quantity * averageBuyCost;
+      return this.buildSellSummary(sell, realizedCost);
+    });
 
     const realizedProfitLoss = sellSummaries.reduce(
       (sum, sell) => sum + sell.realizedProfitLoss,
@@ -462,7 +626,7 @@ export class TradesService extends TradesAbstract {
 
     const currentPrice = trade.currentPrice || trade.buyPrice;
     const unrealizedGrossValue = remainingQuantity * currentPrice;
-    const remainingCost = remainingQuantity * averageBuyCost;
+    const remainingCost = fifoResult.remainingTotalCost;
     const unrealizedProfitLoss = unrealizedGrossValue - remainingCost;
     const totalProfitLoss = realizedProfitLoss + unrealizedProfitLoss;
     const profitLossPercentage =
@@ -500,47 +664,17 @@ export class TradesService extends TradesAbstract {
     };
   }
 
-  // private buildSellSummary(
-  //   sell: TradeSellDocument,
-  //   averageBuyCost: number,
-  // ): TradeSellSummary {
-  //   const grossSellValue = sell.quantity * sell.sellPrice;
-  //   const netSellValue = grossSellValue - sell.brokerage - sell.charges;
-  //   const realizedCost = sell.quantity * averageBuyCost;
-  //   const realizedProfitLoss = netSellValue - realizedCost;
-
-  //   return {
-  //     id: sell._id.toString(),
-  //     tradeId: sell.tradeId.toString(),
-  //     sellDate: sell.sellDate,
-  //     quantity: sell.quantity,
-  //     sellPrice: sell.sellPrice,
-  //     grossSellValue: Number(grossSellValue.toFixed(2)),
-  //     brokerage: sell.brokerage,
-  //     charges: sell.charges,
-  //     netSellValue: Number(netSellValue.toFixed(2)),
-  //     realizedProfitLoss: Number(realizedProfitLoss.toFixed(2)),
-  //     displayGrossSellValue: this.formatCurrency(grossSellValue),
-  //     displayNetSellValue: this.formatCurrency(netSellValue),
-  //     displayRealizedProfitLoss: this.formatCurrency(realizedProfitLoss),
-  //     notes: sell.notes,
-  //   };
-  // }
-
   private buildSellSummary(
     sell: TradeSellDocument,
-    averageBuyCost: number,
+    realizedCost: number,
   ): TradeSellSummary {
     const grossSellValue = sell.quantity * sell.sellPrice;
 
-    // Brokerage and charges are stored/displayed,
-    // but are not included in the calculation.
-    const netSellValue = grossSellValue;
+    // Net sell value = what the user actually received after all sell-side costs.
+    const netSellValue = grossSellValue - sell.brokerage - sell.charges;
 
-    const realizedCost = sell.quantity * averageBuyCost;
-
-    // P&L is calculated without brokerage and charges.
-    const realizedProfitLoss = grossSellValue - realizedCost;
+    // Realized P&L = net proceeds minus the cost basis of the shares sold.
+    const realizedProfitLoss = netSellValue - realizedCost;
 
     return {
       id: sell._id.toString(),
@@ -548,21 +682,14 @@ export class TradesService extends TradesAbstract {
       sellDate: sell.sellDate,
       quantity: sell.quantity,
       sellPrice: sell.sellPrice,
-
       grossSellValue: Number(grossSellValue.toFixed(2)),
-
       brokerage: sell.brokerage,
       charges: sell.charges,
-
       netSellValue: Number(netSellValue.toFixed(2)),
-
       realizedProfitLoss: Number(realizedProfitLoss.toFixed(2)),
-
       displayGrossSellValue: this.formatCurrency(grossSellValue),
       displayNetSellValue: this.formatCurrency(netSellValue),
-      displayRealizedProfitLoss:
-        this.formatCurrency(realizedProfitLoss),
-
+      displayRealizedProfitLoss: this.formatCurrency(realizedProfitLoss),
       notes: sell.notes,
     };
   }
@@ -571,13 +698,10 @@ export class TradesService extends TradesAbstract {
     return sells.reduce((sum, sell) => sum + sell.quantity, 0);
   }
 
-  // private calculateTotalBuyCost(trade: TradeDocument): number {
-  //   const grossBuyValue = trade.buyPrice * trade.quantity;
-  //   return grossBuyValue - trade.brokerage - trade.charges;
-  // }
-
-  private calculateTotalBuyCost(trade): number {
-    return trade.buyPrice * trade.quantity;
+  private calculateTotalBuyCost(trade: TradeDocument): number {
+    // Total buy cost = what the user actually paid to acquire the shares,
+    // including all buy-side transaction costs.
+    return trade.buyPrice * trade.quantity + trade.brokerage + trade.charges;
   }
 
   private calculateAverageBuyCost(trade: TradeDocument): number {

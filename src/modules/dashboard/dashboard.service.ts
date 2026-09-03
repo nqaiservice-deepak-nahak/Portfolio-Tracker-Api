@@ -269,34 +269,6 @@ export class DashboardService extends DashboardAbstract {
     return Number(projectedValue.toFixed(2));
   }
 
-  // private calculateTradesInvestment(
-  //   trades: TradeDocument[],
-  //   tradeSells: TradeSellDocument[],
-  // ): number {
-  //   const total = trades.reduce((sum, trade) => {
-  //     const tradeSellEntries = tradeSells.filter(
-  //       (sell) => sell.tradeId.toString() === trade._id.toString(),
-  //     );
-
-  //     const soldQuantity = this.calculateSoldQuantity(tradeSellEntries);
-  //     const remainingQuantity = trade.quantity - soldQuantity;
-
-  //     if (remainingQuantity <= 0) {
-  //       return sum;
-  //     }
-
-  //     const totalBuyCost =
-  //       trade.buyPrice * trade.quantity + trade.brokerage + trade.charges;
-
-  //     const averageBuyCost =
-  //       trade.quantity > 0 ? totalBuyCost / trade.quantity : 0;
-
-  //     return sum + remainingQuantity * averageBuyCost;
-  //   }, 0);
-
-  //   return Number(total.toFixed(2));
-  // }
-
   private calculateTradesInvestment(
     trades: TradeDocument[],
     tradeSells: TradeSellDocument[],
@@ -313,6 +285,8 @@ export class DashboardService extends DashboardAbstract {
         return sum;
       }
 
+      // trade.buyPrice is now maintained as the fully-loaded average cost per share 
+      // (inclusive of brokerage and charges) by TradesService via FIFO matching.
       return sum + remainingQuantity * trade.buyPrice;
     }, 0);
 

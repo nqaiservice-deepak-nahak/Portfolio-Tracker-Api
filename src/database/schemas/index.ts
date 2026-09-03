@@ -1,3 +1,4 @@
+export * from './buy-lot.schema';
 export * from './chat-session.schema';
 export * from './mutual-fund.schema';
 export * from './net-worth-section.schema';

@@ -234,13 +234,16 @@ describe('DashboardService', () => {
     // });
 
     it('should calculate trade investment using only the remaining quantity', () => {
+        const totalBuyCost = 100 * 10 + 5 + 2;
+        const averageBuyCost = totalBuyCost / 10;
+
         const trade = {
             _id: 'trade-1',
             userId: 'user-123',
             stockSymbol: 'RELIANCE',
             companyName: 'Reliance Industries',
             buyDate: new Date('2026-08-20'),
-            buyPrice: 100,
+            buyPrice: averageBuyCost,
             quantity: 10,
             brokerage: 5,
             charges: 2,
@@ -270,7 +273,8 @@ describe('DashboardService', () => {
             [sell],
         );
 
-        expect(investment).toBeCloseTo(600);
+        const remaining = 10 - 4;
+        expect(investment).toBeCloseTo(remaining * averageBuyCost, 2);
     });
 
     it('should calculate trade current value using only the remaining quantity', () => {
@@ -792,7 +796,7 @@ describe('DashboardService', () => {
             stockSymbol: 'RELIANCE',
             companyName: 'Reliance Industries',
             buyDate: new Date('2026-08-20'),
-            buyPrice: 100,
+            buyPrice: 101, // (1000 + 5 + 5)/10 = 101
             quantity: 10,
             brokerage: 5,
             charges: 5,
@@ -810,6 +814,6 @@ describe('DashboardService', () => {
             [],
         );
 
-        expect(investment).toBe(1000);
+        expect(investment).toBe(1010);
     });
 });

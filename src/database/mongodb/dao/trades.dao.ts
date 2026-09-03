@@ -73,6 +73,30 @@ export class TradesDao implements AbstractTradesDao {
     }
   }
 
+  async findActiveTradeBySymbol(
+    userId: string,
+    stockSymbol: string,
+  ): Promise<AppResponse> {
+    try {
+      const trade = await this.tradeModel
+        .findOne({ userId, stockSymbol, isActive: true })
+        .exec();
+      
+      if (!trade) {
+        return createResponse(
+          HttpStatus.NOT_FOUND,
+          messageFactory(Messages.W5, ['Active Trade']),
+        );
+      }
+      return createResponse(HttpStatus.OK, Messages.S19, trade);
+    } catch (error: any) {
+      return createResponse(
+        HttpStatus.INTERNAL_SERVER_ERROR,
+        Messages.E2,
+      );
+    }
+  }
+
   async updateTrade(
     userId: string,
     tradeId: string,

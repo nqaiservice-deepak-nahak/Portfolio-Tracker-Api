@@ -45,6 +45,8 @@ export class CreateTradeSellDto {
   @ApiProperty({
     example: 15,
     required: false,
+    description: 'Ignored — computed server-side',
+    readOnly: true,
   })
   @Type(() => Number)
   @IsNumber()

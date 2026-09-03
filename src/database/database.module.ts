@@ -13,7 +13,11 @@ import { AbstractTradesDao } from './mongodb/abstract/trades.abstract';
 import { TradesDao } from './mongodb/dao/trades.dao';
 import { AbstractDashboardDao } from './mongodb/abstract/dashboard.abstract';
 import { DashboardDao } from './mongodb/dao/dashboard.dao';
+import { AbstractBuyLotsDao } from './mongodb/abstract/buy-lots.abstract';
+import { BuyLotsDao } from './mongodb/dao/buy-lots.dao';
 import {
+  BuyLot,
+  BuyLotSchema,
   ChatSession,
   ChatSessionSchema,
   MutualFund,
@@ -52,6 +56,7 @@ import {
       { name: NetWorthSection.name, schema: NetWorthSectionSchema },
       { name: Trade.name, schema: TradeSchema },
       { name: TradeSell.name, schema: TradeSellSchema },
+      { name: BuyLot.name, schema: BuyLotSchema },
     ]),
   ],
   providers: [
@@ -61,6 +66,7 @@ import {
     { provide: AbstractMutualFundsDao, useClass: MutualFundsDao },
     { provide: AbstractTradesDao, useClass: TradesDao },
     { provide: AbstractDashboardDao, useClass: DashboardDao },
+    { provide: AbstractBuyLotsDao, useClass: BuyLotsDao },
   ],
   exports: [
     DatabaseService,
@@ -70,6 +76,7 @@ import {
     AbstractMutualFundsDao,
     AbstractTradesDao,
     AbstractDashboardDao,
+    AbstractBuyLotsDao,
   ],
 })
 export class DatabaseModule {}
