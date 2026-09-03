@@ -81,7 +81,9 @@ export class TradesService extends TradesAbstract {
           companyName: createTradeDto.companyName.trim(),
           buyDate: buyDate,
           buyPrice: createTradeDto.buyPrice, // Will be maintained as average later
-          quantity: 0, // Will be updated via BuyLots
+          // The parent Trade must be valid before its first BuyLot is created.
+          // syncTradeWithLotsAndSells will subsequently recalculate this value.
+          quantity: createTradeDto.quantity,
           brokerage: 0,
           charges: 0,
           currentPrice: createTradeDto.currentPrice || createTradeDto.buyPrice,

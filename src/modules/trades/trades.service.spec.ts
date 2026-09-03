@@ -224,7 +224,7 @@ describe('TradesService', () => {
             companyName: 'Reliance Industries',
             buyDate: new Date('2026-08-20'),
             buyPrice: 100,
-            quantity: 0,
+            quantity: 10,
 
             brokerage: 0,
             charges: 0,
@@ -357,7 +357,7 @@ describe('TradesService', () => {
             companyName: 'Tata Consultancy Services',
             buyDate: new Date('2026-08-20'),
             buyPrice: 100,
-            quantity: 0,
+            quantity: 10,
             brokerage: 0,
             charges: 0,
             currentPrice: 100,
