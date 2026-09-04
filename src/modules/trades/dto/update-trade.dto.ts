@@ -2,6 +2,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import {
   IsDateString,
   IsEnum,
+  IsInt,
   IsNumber,
   IsOptional,
   IsString,
@@ -54,7 +55,7 @@ export class UpdateTradeDto {
     required: false,
   })
   @Type(() => Number)
-  @IsNumber()
+  @IsInt({ message: 'quantity must be a whole number' })
   @Min(1)
   @IsOptional()
   quantity?: number;

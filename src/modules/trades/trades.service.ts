@@ -15,7 +15,7 @@ import { TradeSellDocument } from '../../database/schemas/trade-sell.schema';
 import { BuyLotDocument } from '../../database/schemas/buy-lot.schema';
 import { CreateTradeDto } from './dto/create-trade.dto';
 import { UpdateTradeDto } from './dto/update-trade.dto';
-import { CreateTradeSellDto } from './dto/create-trade-sell.sto';
+import { CreateTradeSellDto } from './dto/create-trade-sell.dto';
 import {
   TradesAbstract,
   TradeSummary,
@@ -475,7 +475,25 @@ export class TradesService extends TradesAbstract {
         return createResponse(HttpStatus.BAD_REQUEST, Messages.W39);
       }
 
-      if (sellDate < trade.buyDate) {
+      // AFTER:
+      // Fetch lots to validate sell date against all lot dates
+      const lotsForDateCheckRes = await this.buyLotsDao.listBuyLotsForTrade(tradeId);
+      const lotsForDateCheck: BuyLotDocument[] =
+        lotsForDateCheckRes.code === HttpStatus.OK
+          ? (lotsForDateCheckRes.data as BuyLotDocument[])
+          : [];
+
+      // Use the earliest lot date as the floor (fallback to trade.buyDate for legacy data)
+      const earliestLotDate =
+        lotsForDateCheck.length > 0
+          ? lotsForDateCheck.reduce(
+            (earliest, lot) =>
+              lot.buyDate < earliest ? lot.buyDate : earliest,
+            lotsForDateCheck[0].buyDate,
+          )
+          : trade.buyDate;
+
+      if (sellDate < earliestLotDate) {
         return createResponse(HttpStatus.BAD_REQUEST, Messages.W31);
       }
 
@@ -741,21 +759,6 @@ export class TradesService extends TradesAbstract {
   //   }
   //   return totalBuyCost / trade.quantity;
   // }
-
-  private calculateTotalBuyCost(buyLots: BuyLotDocument[]): number {
-    // Total cost = what the user actually paid across every lot ever bought,
-    // including each lot's own brokerage and charges.
-    return buyLots.reduce(
-      (sum, lot) => sum + lot.buyPrice * lot.originalQuantity + lot.brokerage + lot.charges,
-      0,
-    );
-  }
-
-  private calculateAverageBuyCost(buyLots: BuyLotDocument[]): number {
-    const totalQty = buyLots.reduce((sum, lot) => sum + lot.originalQuantity, 0);
-    if (totalQty <= 0) return 0;
-    return this.calculateTotalBuyCost(buyLots) / totalQty;
-  }
 
   private formatCurrency(value: number): string {
     return new Intl.NumberFormat('en-IN', {

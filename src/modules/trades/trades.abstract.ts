@@ -1,7 +1,7 @@
 import type { AppResponse } from '../../shared/appresponse.shared';
 import { CreateTradeDto } from './dto/create-trade.dto';
 import { UpdateTradeDto } from './dto/update-trade.dto';
-import { CreateTradeSellDto } from './dto/create-trade-sell.sto';
+import { CreateTradeSellDto } from './dto/create-trade-sell.dto';
 import { ListTradesDto, ListTradeSellsDto } from './dto/list-trades.dto';
 
 export interface TradeSellSummary {

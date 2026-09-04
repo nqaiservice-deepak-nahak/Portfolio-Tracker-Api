@@ -4259,14 +4259,6 @@ describe('TradesService', () => {
         expect(data.stopLoss).toBe(150);
     });
 
-    it('should return zero average buy cost when there are no buy lots', () => {
-        const buyLots: any[] = [];
-
-        const result = (service as any).calculateAverageBuyCost(buyLots);
-
-        expect(result).toBe(0);
-    });
-
     it('should use buy price when current price is not available', async () => {
         const userId = 'user-123';
         const tradeId = '507f1f77bcf86cd799439011';
