@@ -1,6 +1,0 @@
-export enum TradeStatus {
-  PENDING = 'PENDING',
-  PARTIALLY_EXITED = 'PARTIALLY_EXITED',
-  CLOSED = 'CLOSED',
-  CANCELLED = 'CANCELLED',
-}

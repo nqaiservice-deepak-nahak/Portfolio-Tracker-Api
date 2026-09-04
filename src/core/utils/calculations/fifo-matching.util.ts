@@ -8,6 +8,7 @@ export interface FifoSellResult {
 
 export interface FifoPositionResult {
   totalOriginalQuantity: number;
+  totalOriginalCost: number;
   remainingQuantity: number;
   remainingTotalCost: number;
   averageBuyPrice: number;
@@ -74,9 +75,11 @@ export function calculateFifoPosition(
   let remainingQuantity = 0;
   let remainingTotalCost = 0;
   let totalOriginalQuantity = 0;
+  let totalOriginalCost = 0;  
 
   for (const lot of lotStates) {
     totalOriginalQuantity += lot.originalQty;
+    totalOriginalCost += lot.originalQty * lot.costPerShare;
     if (lot.remainingQty > 0) {
       remainingQuantity += lot.remainingQty;
       remainingTotalCost += lot.remainingQty * lot.costPerShare;
@@ -88,6 +91,7 @@ export function calculateFifoPosition(
 
   return {
     totalOriginalQuantity,
+    totalOriginalCost,
     remainingQuantity,
     remainingTotalCost,
     averageBuyPrice,
