@@ -15,7 +15,7 @@ import { TradeSellDocument } from '../../database/schemas/trade-sell.schema';
 import { BuyLotDocument } from '../../database/schemas/buy-lot.schema';
 import { CreateTradeDto } from './dto/create-trade.dto';
 import { UpdateTradeDto } from './dto/update-trade.dto';
-import { CreateTradeSellDto } from './dto/create-trade-sell.sto';
+import { CreateTradeSellDto } from './dto/create-trade-sell.dto';
 import {
   TradesAbstract,
   TradeSummary,
@@ -65,7 +65,7 @@ export class TradesService extends TradesAbstract {
       });
 
       const stockSymbol = createTradeDto.stockSymbol.trim().toUpperCase();
-      
+
       // Check for existing open position for this symbol
       const existingTradeRes = await this.tradesDao.findActiveTradeBySymbol(userId, stockSymbol);
       let trade: TradeDocument;
@@ -134,7 +134,7 @@ export class TradesService extends TradesAbstract {
 
     const lotsRes = await this.buyLotsDao.listBuyLotsForTrade(tradeId);
     const sellsRes = await this.tradesDao.listSells(userId, tradeId);
-    
+
     let buyLots = lotsRes.code === HttpStatus.OK ? (lotsRes.data as BuyLotDocument[]) : [];
     if (buyLots.length === 0 && trade.quantity > 0) {
       // Fallback for pre-migration data: synthesise a single virtual lot from the trade itself
@@ -156,7 +156,9 @@ export class TradesService extends TradesAbstract {
     // Update Trade document with latest totals
     await this.tradesDao.updateTrade(userId, tradeId, {
       quantity: fifoResult.totalOriginalQuantity, // total historical quantity ever bought
-      buyPrice: fifoResult.averageBuyPrice,        // stored as cost-inclusive average
+      buyPrice: fifoResult.averageBuyPrice,
+      brokerage: buyLots.reduce((sum, lot) => sum + lot.brokerage, 0),   // ADD
+      charges: buyLots.reduce((sum, lot) => sum + lot.charges, 0),        // stored as cost-inclusive average
     });
   }
 
@@ -325,15 +327,40 @@ export class TradesService extends TradesAbstract {
         updatePayload.buyDate = newBuyDate;
       }
 
+      // if (updateTradeDto.buyPrice !== undefined) {
+      //   updatePayload.buyPrice = updateTradeDto.buyPrice;
+      // }
+
+      // if (updateTradeDto.quantity !== undefined) {
+      //   updatePayload.quantity = updateTradeDto.quantity;
+      // }
+
+      // if (updateTradeDto.brokerage !== undefined) {
+      //   updatePayload.brokerage = updateTradeDto.brokerage;
+      // }
+
+      // AFTER
+      const lotsRes = await this.buyLotsDao.listBuyLotsForTrade(tradeId);
+      const hasRealLots = lotsRes.code === HttpStatus.OK && (lotsRes.data as BuyLotDocument[]).length > 0;
+
       if (updateTradeDto.buyPrice !== undefined) {
+        if (hasRealLots) {
+          return createResponse(HttpStatus.BAD_REQUEST, Messages.W40); // "buyPrice is system-derived from buy lots and cannot be edited directly"
+        }
         updatePayload.buyPrice = updateTradeDto.buyPrice;
       }
 
       if (updateTradeDto.quantity !== undefined) {
+        if (hasRealLots) {
+          return createResponse(HttpStatus.BAD_REQUEST, Messages.W40);
+        }
         updatePayload.quantity = updateTradeDto.quantity;
       }
 
       if (updateTradeDto.brokerage !== undefined) {
+        if (hasRealLots) {
+          return createResponse(HttpStatus.BAD_REQUEST, Messages.W40);
+        }
         updatePayload.brokerage = updateTradeDto.brokerage;
       }
 
@@ -448,7 +475,25 @@ export class TradesService extends TradesAbstract {
         return createResponse(HttpStatus.BAD_REQUEST, Messages.W39);
       }
 
-      if (sellDate < trade.buyDate) {
+      // AFTER:
+      // Fetch lots to validate sell date against all lot dates
+      const lotsForDateCheckRes = await this.buyLotsDao.listBuyLotsForTrade(tradeId);
+      const lotsForDateCheck: BuyLotDocument[] =
+        lotsForDateCheckRes.code === HttpStatus.OK
+          ? (lotsForDateCheckRes.data as BuyLotDocument[])
+          : [];
+
+      // Use the earliest lot date as the floor (fallback to trade.buyDate for legacy data)
+      const earliestLotDate =
+        lotsForDateCheck.length > 0
+          ? lotsForDateCheck.reduce(
+            (earliest, lot) =>
+              lot.buyDate < earliest ? lot.buyDate : earliest,
+            lotsForDateCheck[0].buyDate,
+          )
+          : trade.buyDate;
+
+      if (sellDate < earliestLotDate) {
         return createResponse(HttpStatus.BAD_REQUEST, Messages.W31);
       }
 
@@ -551,7 +596,7 @@ export class TradesService extends TradesAbstract {
           charges: trade.charges,
         } as any];
       }
-      
+
       const fifoResult = calculateFifoPosition(buyLots, sells);
       const averageBuyCost = trade.buyPrice; // fallback
 
@@ -561,7 +606,7 @@ export class TradesService extends TradesAbstract {
       };
 
       if (!listTradeSellsDto) return createResponse(HttpStatus.OK, Messages.S23, sells.map((sell) => this.buildSellSummary(sell, getRealizedCost(sell._id.toString(), sell.quantity))));
-      
+
       const { page = 1, limit = 10, sortOrder = 'desc' } = listTradeSellsDto;
       const orderedSells = [...sells].sort((a, b) =>
         sortOrder === 'asc'
@@ -604,7 +649,8 @@ export class TradesService extends TradesAbstract {
     const soldQuantity = sells.reduce((sum, sell) => sum + sell.quantity, 0);
     const remainingQuantity = fifoResult.remainingQuantity;
     const grossBuyValue = trade.buyPrice * trade.quantity;
-    const totalBuyCost = this.calculateTotalBuyCost(trade);
+    // const totalBuyCost = this.calculateTotalBuyCost(trade);
+    const totalBuyCost = fifoResult.totalOriginalCost;
     // Use FIFO-derived average: cost-inclusive average per share
     const averageBuyCost = fifoResult.averageBuyPrice > 0
       ? fifoResult.averageBuyPrice
@@ -700,19 +746,19 @@ export class TradesService extends TradesAbstract {
     return sells.reduce((sum, sell) => sum + sell.quantity, 0);
   }
 
-  private calculateTotalBuyCost(trade: TradeDocument): number {
-    // Total buy cost = what the user actually paid to acquire the shares,
-    // including all buy-side transaction costs.
-    return trade.buyPrice * trade.quantity + trade.brokerage + trade.charges;
-  }
+  // private calculateTotalBuyCost(trade: TradeDocument): number {
+  //   // Total buy cost = what the user actually paid to acquire the shares,
+  //   // including all buy-side transaction costs.
+  //   return trade.buyPrice * trade.quantity + trade.brokerage + trade.charges;
+  // }
 
-  private calculateAverageBuyCost(trade: TradeDocument): number {
-    const totalBuyCost = this.calculateTotalBuyCost(trade);
-    if (trade.quantity <= 0) {
-      return 0;
-    }
-    return totalBuyCost / trade.quantity;
-  }
+  // private calculateAverageBuyCost(trade: TradeDocument): number {
+  //   const totalBuyCost = this.calculateTotalBuyCost(trade);
+  //   if (trade.quantity <= 0) {
+  //     return 0;
+  //   }
+  //   return totalBuyCost / trade.quantity;
+  // }
 
   private formatCurrency(value: number): string {
     return new Intl.NumberFormat('en-IN', {

@@ -78,6 +78,8 @@ enum Messages {
   W37 = 'Buy date cannot be after an existing sell date.',
   W38 = 'Microsoft ID token was not returned.',
   W39 = 'Sell date cannot be in the future.',
+  W40 = 'This field is calculated automatically from buy lots and cannot be edited directly once a position has buy lots.',
+  
 
   /* Error messages : Start with E */
   E1 = 'Application failed to start: ARG0',

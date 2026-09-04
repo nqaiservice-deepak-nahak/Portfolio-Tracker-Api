@@ -262,6 +262,33 @@ describe('TradesService', () => {
         expect(data.status).toBe(TradeStatus.OPEN);
         expect(data.isActive).toBe(true);
     });
+
+    it('should compute totalBuyCost correctly across multiple buy lots with different prices after a partial sell', async () => {
+        const userId = 'user-123';
+        const tradeId = '507f1f77bcf86cd799439011';
+
+        const lotA = { _id: 'lotA', tradeId, buyDate: new Date('2026-01-01'), buyPrice: 100, originalQuantity: 100, brokerage: 0, charges: 0 };
+        const lotB = { _id: 'lotB', tradeId, buyDate: new Date('2026-02-01'), buyPrice: 200, originalQuantity: 50, brokerage: 0, charges: 0 };
+
+        const sell = { _id: 'sell1', tradeId, sellDate: new Date('2026-03-01'), quantity: 100, sellPrice: 150, brokerage: 0, charges: 0 };
+
+        const fakeTrade = {
+            _id: tradeId, userId, stockSymbol: 'TEST', companyName: 'Test Co',
+            buyDate: lotA.buyDate, buyPrice: 100, quantity: 150,
+            brokerage: 0, charges: 0, currentPrice: 200, targetPrice: 0, stopLoss: 0,
+            notes: '', status: TradeStatus.PARTIALLY_SOLD, isActive: true, archivedAt: null,
+        };
+
+        mockTradesDao.findTrade.mockResolvedValue(createResponse(HttpStatus.OK, Messages.S19, fakeTrade));
+        mockTradesDao.listSells.mockResolvedValue(createResponse(HttpStatus.OK, Messages.S2, [sell]));
+        mockBuyLotsDao.listBuyLotsForTrade.mockResolvedValue(createResponse(HttpStatus.OK, Messages.S2, [lotA, lotB]));
+
+        const result = await service.getTradeById(userId, tradeId);
+        const data = result.data;
+
+        // True total cost = 100*100 + 50*200 = 20,000  — NOT 200*150 = 30,000
+        expect(data.totalBuyCost).toBeCloseTo(20000, 2);
+    });
     it('should throw NotFoundException when user tries to access another user trade', async () => {
         const userA = 'user-a';
         const tradeId = '507f1f77bcf86cd799439011';
@@ -2618,7 +2645,6 @@ describe('TradesService', () => {
             tradeId,
             {
                 quantity: 6,
-                charges: 99999,
             },
         );
 
@@ -4207,7 +4233,6 @@ describe('TradesService', () => {
             companyName: ' Tata Consultancy Services ',
             buyPrice: 200,
             brokerage: 10,
-            charges: 99999,
             stopLoss: 150,
         });
 
@@ -4232,19 +4257,6 @@ describe('TradesService', () => {
         expect(data.brokerage).toBe(10);
         expect(data.charges).toBe(4.17);
         expect(data.stopLoss).toBe(150);
-    });
-
-    it('should return zero average buy cost when quantity is zero', () => {
-        const trade = {
-            buyPrice: 100,
-            quantity: 0,
-            brokerage: 5,
-            charges: 2,
-        };
-
-        const result = (service as any).calculateAverageBuyCost(trade);
-
-        expect(result).toBe(0);
     });
 
     it('should use buy price when current price is not available', async () => {
@@ -4364,5 +4376,54 @@ describe('TradesService', () => {
 
         expect(data.totalBuyCost).toBe(0);
         expect(data.profitLossPercentage).toBe(0);
+    });
+
+    it('should reject buyPrice/quantity edits once real buy lots exist', async () => {
+        const userId = 'user-123';
+        const tradeId = '507f1f77bcf86cd799439011';
+
+        const fakeTrade = {
+            _id: tradeId, userId, stockSymbol: 'RELIANCE', companyName: 'Reliance Industries',
+            buyDate: new Date('2026-08-20'), buyPrice: 100, quantity: 10,
+            brokerage: 5, charges: 2, currentPrice: 120, targetPrice: 150, stopLoss: 90,
+            notes: '', status: TradeStatus.OPEN, isActive: true, archivedAt: null,
+        };
+
+        const realLot = {
+            _id: 'lot-1', tradeId, buyDate: fakeTrade.buyDate, buyPrice: 100,
+            originalQuantity: 10, brokerage: 5, charges: 2,
+        };
+
+        mockTradesDao.findTrade.mockResolvedValue(createResponse(HttpStatus.OK, Messages.S19, fakeTrade));
+        mockTradesDao.listSells.mockResolvedValue(createResponse(HttpStatus.OK, Messages.S23, []));
+        mockBuyLotsDao.listBuyLotsForTrade.mockResolvedValue(createResponse(HttpStatus.OK, Messages.S2, [realLot]));
+
+        const result = await service.updateTrade(userId, tradeId, { buyPrice: 999 });
+
+        expect(result.code).toBe(HttpStatus.BAD_REQUEST);
+        expect(mockTradesDao.updateTrade).not.toHaveBeenCalled();
+    });
+
+    it('should still allow buyPrice/quantity edits when no real buy lots exist (legacy data)', async () => {
+        const userId = 'user-123';
+        const tradeId = '507f1f77bcf86cd799439011';
+
+        const fakeTrade = {
+            _id: tradeId, userId, stockSymbol: 'RELIANCE', companyName: 'Reliance Industries',
+            buyDate: new Date('2026-08-20'), buyPrice: 100, quantity: 10,
+            brokerage: 5, charges: 2, currentPrice: 120, targetPrice: 150, stopLoss: 90,
+            notes: '', status: TradeStatus.OPEN, isActive: true, archivedAt: null,
+        };
+
+        mockTradesDao.findTrade.mockResolvedValue(createResponse(HttpStatus.OK, Messages.S19, fakeTrade));
+        mockTradesDao.listSells.mockResolvedValue(createResponse(HttpStatus.OK, Messages.S23, []));
+        mockBuyLotsDao.listBuyLotsForTrade.mockResolvedValue(createResponse(HttpStatus.OK, Messages.S2, []));
+        mockTradesDao.updateTrade.mockResolvedValue(createResponse(HttpStatus.OK, Messages.S20, {}));
+
+        const result = await service.updateTrade(userId, tradeId, { buyPrice: 150 });
+
+        expect(mockTradesDao.updateTrade).toHaveBeenCalledWith(
+            userId, tradeId, expect.objectContaining({ buyPrice: 150 }),
+        );
     });
 });

@@ -5,11 +5,12 @@ import { DashboardService } from './dashboard.service';
 import { AbstractDashboardDao } from '../../database/mongodb/abstract/dashboard.abstract';
 import { TradeStatus } from '../../database/schemas/trade.schema';
 import { Messages } from '../../shared/messages.shared';
+import { AbstractBuyLotsDao } from 'src/database/mongodb/abstract/buy-lots.abstract';
 
 describe('DashboardService', () => {
     let service: DashboardService;
     let mockDashboardDao: jest.Mocked<AbstractDashboardDao>;
-
+    let mockBuyLotsDao: jest.Mocked<AbstractBuyLotsDao>;
     beforeEach(() => {
         jest.clearAllMocks();
 
@@ -20,7 +21,14 @@ describe('DashboardService', () => {
             getTradeSellsForTrades: jest.fn(),
         } as unknown as jest.Mocked<AbstractDashboardDao>;
 
-        service = new DashboardService(mockDashboardDao);
+        mockBuyLotsDao = {
+            createBuyLot: jest.fn(),
+            listBuyLotsForTrade: jest.fn(),
+            listBuyLotsForTrades: jest.fn(),
+            updateBuyLot: jest.fn(),
+        } as any;
+
+        service = new DashboardService(mockDashboardDao,mockBuyLotsDao);
     });
 
     it('should be defined', () => {
@@ -256,6 +264,19 @@ describe('DashboardService', () => {
             archivedAt: null,
         };
 
+        // ADD: raw-priced buy lot backing this trade
+        const buyLots = [
+            {
+                _id: 'lot-1',
+                tradeId: 'trade-1',
+                buyDate: trade.buyDate,
+                buyPrice: 100,          // raw price, not averageBuyCost
+                originalQuantity: 10,
+                brokerage: 5,
+                charges: 2,
+            },
+        ];
+
         const sell = {
             _id: 'sell-1',
             tradeId: 'trade-1',
@@ -271,6 +292,7 @@ describe('DashboardService', () => {
         const investment = (service as any).calculateTradesInvestment(
             [trade],
             [sell],
+            buyLots,                    // ADD 3rd arg
         );
 
         const remaining = 10 - 4;
@@ -297,6 +319,11 @@ describe('DashboardService', () => {
             archivedAt: null,
         };
 
+        // ADD
+        const buyLots = [
+            { _id: 'lot-1', tradeId: 'trade-1', buyDate: trade.buyDate, buyPrice: 100, originalQuantity: 10, brokerage: 5, charges: 2 },
+        ];
+
         const sell = {
             _id: 'sell-1',
             tradeId: 'trade-1',
@@ -312,6 +339,7 @@ describe('DashboardService', () => {
         const currentValue = (service as any).calculateTradesCurrentValue(
             [trade],
             [sell],
+            buyLots,                    // ADD 3rd arg
         );
 
         expect(currentValue).toBe(720);
@@ -337,6 +365,11 @@ describe('DashboardService', () => {
             archivedAt: null,
         };
 
+        // ADD
+        const buyLots = [
+            { _id: 'lot-1', tradeId: 'trade-1', buyDate: trade.buyDate, buyPrice: 100, originalQuantity: 10, brokerage: 5, charges: 2 },
+        ];
+
         const sell = {
             _id: 'sell-1',
             tradeId: 'trade-1',
@@ -352,11 +385,13 @@ describe('DashboardService', () => {
         const investment = (service as any).calculateTradesInvestment(
             [trade],
             [sell],
+            buyLots,                    // ADD 3rd arg
         );
 
         const currentValue = (service as any).calculateTradesCurrentValue(
             [trade],
             [sell],
+            buyLots,                    // ADD 3rd arg
         );
 
         expect(investment).toBe(0);
@@ -403,6 +438,12 @@ describe('DashboardService', () => {
             },
         ];
 
+        // ADD: one buy lot per trade
+        const buyLots = [
+            { _id: 'lot-a', tradeId: 'trade-a', buyDate: trades[0].buyDate, buyPrice: 100, originalQuantity: 10, brokerage: 0, charges: 0 },
+            { _id: 'lot-b', tradeId: 'trade-b', buyDate: trades[1].buyDate, buyPrice: 200, originalQuantity: 20, brokerage: 0, charges: 0 },
+        ];
+
         const sells = [
             {
                 _id: 'sell-a',
@@ -431,11 +472,13 @@ describe('DashboardService', () => {
         const investment = (service as any).calculateTradesInvestment(
             trades,
             sells,
+            buyLots,                    // ADD 3rd arg
         );
 
         const currentValue = (service as any).calculateTradesCurrentValue(
             trades,
             sells,
+            buyLots,                    // ADD 3rd arg
         );
 
         expect(investment).toBe(3200);
@@ -753,9 +796,15 @@ describe('DashboardService', () => {
             archivedAt: null,
         };
 
+        // ADD
+        const buyLots = [
+            { _id: 'lot-1', tradeId: 'trade-1', buyDate: trade.buyDate, buyPrice: 100, originalQuantity: 10, brokerage: 5, charges: 2 },
+        ];
+
         const currentValue = (service as any).calculateTradesCurrentValue(
             [trade],
             [],
+            buyLots,                    // ADD 3rd arg
         );
 
         expect(currentValue).toBe(1000);
@@ -809,9 +858,15 @@ describe('DashboardService', () => {
             archivedAt: null,
         };
 
+        // ADD: raw price, not the pre-computed inclusive average
+        const buyLots = [
+            { _id: 'lot-1', tradeId: 'trade-1', buyDate: trade.buyDate, buyPrice: 100, originalQuantity: 10, brokerage: 5, charges: 5 },
+        ];
+
         const investment = (service as any).calculateTradesInvestment(
             [trade],
             [],
+            buyLots,                    // ADD 3rd arg
         );
 
         expect(investment).toBe(1010);

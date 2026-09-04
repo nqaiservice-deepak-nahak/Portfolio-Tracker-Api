@@ -176,10 +176,11 @@ export class TradesDao implements AbstractTradesDao {
     currentPrice: number,
   ): Promise<AppResponse> {
     try {
+      const isActive = status !== TradeStatus.CLOSED && status !== TradeStatus.ARCHIVED;
       const res = await this.tradeModel
         .updateOne(
           { _id: tradeId, userId },
-          { $set: { status, currentPrice } },
+          { $set: { status, currentPrice, isActive } },
         )
         .exec();
       if (res.matchedCount === 0) {

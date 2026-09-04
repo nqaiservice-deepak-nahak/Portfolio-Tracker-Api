@@ -17,10 +17,16 @@ import {
 import { DashboardAbstract } from './dashboard.abstract';
 import { ListRecentActivityDto } from './dto/list-recent-activity.dto';
 import { calculatePaginationMeta, skipAndLimit } from '../../shared/pagination.shared';
+import { AbstractBuyLotsDao } from '../../database/mongodb/abstract/buy-lots.abstract';
+import { BuyLotDocument } from '../../database/schemas/buy-lot.schema';
+import { calculateFifoPosition } from '../../core/utils/calculations/fifo-matching.util';
 
 @Injectable()
 export class DashboardService extends DashboardAbstract {
-  constructor(private readonly dashboardDao: AbstractDashboardDao) {
+  constructor(
+    private readonly dashboardDao: AbstractDashboardDao,
+    private readonly buyLotsDao: AbstractBuyLotsDao
+  ) {
     super();
   }
 
@@ -55,6 +61,7 @@ export class DashboardService extends DashboardAbstract {
       const tradeIds = trades.map((trade) => trade._id.toString());
 
       let tradeSells: TradeSellDocument[] = [];
+      let buyLots: BuyLotDocument[] = [];
       if (tradeIds.length > 0) {
         const sellRes = await this.dashboardDao.getTradeSellsForTrades(
           userId,
@@ -64,6 +71,10 @@ export class DashboardService extends DashboardAbstract {
           return sellRes;
         }
         tradeSells = sellRes.data as TradeSellDocument[];
+        const lotsRes = await this.buyLotsDao.listBuyLotsForTrades(tradeIds);   // ADD
+        if (lotsRes.code === HttpStatus.OK) {                                  // ADD
+          buyLots = lotsRes.data as BuyLotDocument[];                          // ADD
+        }
       }
 
       const mutualFundsTotalInvestment = this.calculateMutualFundsInvestment(
@@ -82,11 +93,13 @@ export class DashboardService extends DashboardAbstract {
       const tradesTotalInvestment = this.calculateTradesInvestment(
         trades,
         tradeSells,
+        buyLots
       );
 
       const tradesCurrentValue = this.calculateTradesCurrentValue(
         trades,
         tradeSells,
+        buyLots,
       );
 
       const tradesProfitLoss = tradesCurrentValue - tradesTotalInvestment;
@@ -272,22 +285,34 @@ export class DashboardService extends DashboardAbstract {
   private calculateTradesInvestment(
     trades: TradeDocument[],
     tradeSells: TradeSellDocument[],
+    buyLots: BuyLotDocument[],
   ): number {
     const total = trades.reduce((sum, trade) => {
+      const tradeId = trade._id.toString();
       const tradeSellEntries = tradeSells.filter(
-        (sell) => sell.tradeId.toString() === trade._id.toString(),
+        (sell) => sell.tradeId.toString() === tradeId,
       );
-
-      const soldQuantity = this.calculateSoldQuantity(tradeSellEntries);
-      const remainingQuantity = trade.quantity - soldQuantity;
-
-      if (remainingQuantity <= 0) {
+      let tradeLots = buyLots.filter(
+        (lot) => lot.tradeId.toString() === tradeId,
+      );
+      if (tradeLots.length === 0 && trade.quantity > 0) {
+        // Fallback for pre-migration data with no BuyLot records yet
+        tradeLots = [{
+          _id: trade._id,
+          tradeId: trade._id,
+          buyDate: trade.buyDate,
+          buyPrice: trade.buyPrice,
+          originalQuantity: trade.quantity,
+          brokerage: trade.brokerage,
+          charges: trade.charges,
+        } as any];
+      }
+      if (tradeLots.length === 0) {
         return sum;
       }
 
-      // trade.buyPrice is now maintained as the fully-loaded average cost per share 
-      // (inclusive of brokerage and charges) by TradesService via FIFO matching.
-      return sum + remainingQuantity * trade.buyPrice;
+      const fifoResult = calculateFifoPosition(tradeLots, tradeSellEntries);
+      return sum + fifoResult.remainingTotalCost;
     }, 0);
 
     return Number(total.toFixed(2));
@@ -296,22 +321,38 @@ export class DashboardService extends DashboardAbstract {
   private calculateTradesCurrentValue(
     trades: TradeDocument[],
     tradeSells: TradeSellDocument[],
+    buyLots: BuyLotDocument[],
   ): number {
     const total = trades.reduce((sum, trade) => {
+      const tradeId = trade._id.toString();
       const tradeSellEntries = tradeSells.filter(
-        (sell) => sell.tradeId.toString() === trade._id.toString(),
+        (sell) => sell.tradeId.toString() === tradeId,
       );
+      let tradeLots = buyLots.filter(
+        (lot) => lot.tradeId.toString() === tradeId,
+      );
+      if (tradeLots.length === 0 && trade.quantity > 0) {
+        tradeLots = [{
+          _id: trade._id,
+          tradeId: trade._id,
+          buyDate: trade.buyDate,
+          buyPrice: trade.buyPrice,
+          originalQuantity: trade.quantity,
+          brokerage: trade.brokerage,
+          charges: trade.charges,
+        } as any];
+      }
+      if (tradeLots.length === 0) {
+        return sum;
+      }
 
-      const soldQuantity = this.calculateSoldQuantity(tradeSellEntries);
-      const remainingQuantity = trade.quantity - soldQuantity;
-
-      if (remainingQuantity <= 0) {
+      const fifoResult = calculateFifoPosition(tradeLots, tradeSellEntries);
+      if (fifoResult.remainingQuantity <= 0) {
         return sum;
       }
 
       const currentPrice = trade.currentPrice || trade.buyPrice;
-
-      return sum + remainingQuantity * currentPrice;
+      return sum + fifoResult.remainingQuantity * currentPrice;
     }, 0);
 
     return Number(total.toFixed(2));

@@ -18,7 +18,7 @@ import {
 import { TradesAbstract } from './trades.abstract';
 import { CreateTradeDto } from './dto/create-trade.dto';
 import { UpdateTradeDto } from './dto/update-trade.dto';
-import { CreateTradeSellDto } from './dto/create-trade-sell.sto';
+import { CreateTradeSellDto } from './dto/create-trade-sell.dto';
 import { ListTradesDto, ListTradeSellsDto } from './dto/list-trades.dto';
 import { JwtAuthGuard } from 'src/core/guards/jwt-auth.guard';
 import { CurrentUser } from 'src/core/decorators/current-user.decorator';

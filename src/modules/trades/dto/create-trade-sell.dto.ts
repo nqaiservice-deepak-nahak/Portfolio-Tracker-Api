@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
   IsDateString,
+  IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -20,7 +21,7 @@ export class CreateTradeSellDto {
     example: 5,
   })
   @Type(() => Number)
-  @IsNumber()
+  @IsInt({ message: 'quantity must be a whole number' })
   @Min(1)
   quantity!: number;
 
@@ -29,7 +30,7 @@ export class CreateTradeSellDto {
   })
   @Type(() => Number)
   @IsNumber()
-  @Min(0)
+  @Min(0.01, { message: 'sellPrice must be greater than 0' })
   sellPrice!: number;
 
   @ApiProperty({
