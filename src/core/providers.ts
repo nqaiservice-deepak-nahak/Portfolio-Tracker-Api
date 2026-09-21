@@ -15,7 +15,7 @@ const getProviders = (): any[] => {
 
 const importProviders = (): any[] => {
   return [
-    ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env.prod' }),
+    ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env.dev' }),
   ];
 };
 
